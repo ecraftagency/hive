@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -16,11 +17,21 @@ type RoomState struct {
 	Port         int      `json:"port"`
 	Players      []string `json:"players"`
 	CreatedAt    int64    `json:"created_at_unix"`
+	Status       string   `json:"status,omitempty"`
+	FailReason   string   `json:"fail_reason,omitempty"`
 }
 
 type PendingCreate struct {
 	RoomName  string `json:"room_name"`
 	PlayerID  string `json:"player_id"`
+	EnqueueAt int64  `json:"enqueue_at_unix"`
+}
+
+type Ticket struct {
+	TicketID  string `json:"ticket_id"`
+	PlayerID  string `json:"player_id"`
+	Status    string `json:"status"` // OPENED|MATCHED|EXPIRED|REJECTED
+	RoomID    string `json:"room_id,omitempty"`
 	EnqueueAt int64  `json:"enqueue_at_unix"`
 }
 
@@ -33,57 +44,118 @@ func New(redisAddr string) *Manager {
 	return &Manager{redis: cli}
 }
 
-// Pending queue operations
+// Legacy Pending queue operations (kept for compat)
 const pendingQueueKey = "mm:pending_queue"
 const pendingPlayersSet = "mm:pending_players"
 
-// EnqueuePending: đảm bảo không trùng player_id đang có vé chờ
-func (m *Manager) EnqueuePending(ctx context.Context, p PendingCreate) error {
-	added, err := m.redis.SAdd(ctx, pendingPlayersSet, p.PlayerID).Result()
+// New Ticket keys
+const (
+	openedTicketsKey = "mm:tickets:opened"  // LIST of ticket_id
+	ticketKeyPrefix  = "mm:ticket:"         // mm:ticket:<ticket_id>
+	playersPending   = "mm:players:pending" // SET of player_id with OPENED tickets
+)
+
+// ticketTTL will be set from config, default 120s
+var ticketTTL = 120 * time.Second
+
+// SetTicketTTL sets the ticket TTL from config
+func SetTicketTTL(ttl time.Duration) {
+	ticketTTL = ttl
+}
+
+// CreateTicket (join): returns ticket
+func (m *Manager) CreateTicket(ctx context.Context, playerID string) (*Ticket, error) {
+	// prevent duplicate player
+	added, err := m.redis.SAdd(ctx, playersPending, playerID).Result()
+	if err != nil {
+		return nil, err
+	}
+	if added == 0 {
+		return nil, fmt.Errorf("duplicate ticket for player %s", playerID)
+	}
+	tid := uuid.New().String()
+	t := &Ticket{TicketID: tid, PlayerID: playerID, Status: "OPENED", EnqueueAt: time.Now().Unix()}
+	b, _ := json.Marshal(t)
+	pipe := m.redis.TxPipeline()
+	pipe.RPush(ctx, openedTicketsKey, tid)
+	pipe.Set(ctx, ticketKeyPrefix+tid, string(b), ticketTTL)
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		_ = m.redis.SRem(ctx, playersPending, playerID).Err()
+		return nil, err
+	}
+	return t, nil
+}
+
+func (m *Manager) GetTicket(ctx context.Context, ticketID string) (*Ticket, error) {
+	v, err := m.redis.Get(ctx, ticketKeyPrefix+ticketID).Result()
+	if err != nil {
+		return nil, err
+	}
+	var t Ticket
+	_ = json.Unmarshal([]byte(v), &t)
+	return &t, nil
+}
+
+func (m *Manager) setTicket(ctx context.Context, t *Ticket) error {
+	b, _ := json.Marshal(t)
+	return m.redis.Set(ctx, ticketKeyPrefix+t.TicketID, string(b), ticketTTL).Err()
+}
+
+// CancelTicket: only when OPENED
+func (m *Manager) CancelTicket(ctx context.Context, ticketID string) error {
+	t, err := m.GetTicket(ctx, ticketID)
 	if err != nil {
 		return err
 	}
-	if added == 0 {
-		return fmt.Errorf("duplicate ticket for player %s", p.PlayerID)
+	if t.Status != "OPENED" {
+		return fmt.Errorf("cannot cancel: status=%s", t.Status)
 	}
-	b, _ := json.Marshal(p)
-	if err := m.redis.RPush(ctx, pendingQueueKey, string(b)).Err(); err != nil {
-		// rollback set nếu push queue lỗi
-		_ = m.redis.SRem(ctx, pendingPlayersSet, p.PlayerID).Err()
+	pipe := m.redis.TxPipeline()
+	pipe.LRem(ctx, openedTicketsKey, 0, ticketID)
+	pipe.Del(ctx, ticketKeyPrefix+ticketID)
+	pipe.SRem(ctx, playersPending, t.PlayerID)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// TryMatchPair: naive (non-atomic) pop 2 tickets; caller must handle errors
+func (m *Manager) TryMatchPair(ctx context.Context) (*Ticket, *Ticket, error) {
+	tid1, err1 := m.redis.LPop(ctx, openedTicketsKey).Result()
+	if err1 != nil {
+		return nil, nil, err1
+	}
+	tid2, err2 := m.redis.LPop(ctx, openedTicketsKey).Result()
+	if err2 != nil {
+		// push back tid1 to head to avoid loss
+		_ = m.redis.LPush(ctx, openedTicketsKey, tid1).Err()
+		return nil, nil, err2
+	}
+	t1, e1 := m.GetTicket(ctx, tid1)
+	t2, e2 := m.GetTicket(ctx, tid2)
+	if e1 != nil || e2 != nil {
+		return nil, nil, fmt.Errorf("failed to load tickets")
+	}
+	return t1, t2, nil
+}
+
+// MarkMatched updates ticket with room_id and status
+func (m *Manager) MarkMatched(ctx context.Context, ticketID, roomID string) error {
+	t, err := m.GetTicket(ctx, ticketID)
+	if err != nil {
 		return err
 	}
+	t.Status = "MATCHED"
+	t.RoomID = roomID
+	if err := m.setTicket(ctx, t); err != nil {
+		return err
+	}
+	// allow player submit new ticket later
+	_ = m.redis.SRem(ctx, playersPending, t.PlayerID).Err()
 	return nil
 }
 
-func (m *Manager) DequeuePending(ctx context.Context) (*PendingCreate, error) {
-	v, err := m.redis.LPop(ctx, pendingQueueKey).Result()
-	if err != nil {
-		return nil, err
-	}
-	var p PendingCreate
-	_ = json.Unmarshal([]byte(v), &p)
-	// xóa đánh dấu player khỏi set pending
-	_ = m.redis.SRem(ctx, pendingPlayersSet, p.PlayerID).Err()
-	return &p, nil
-}
-
-// ListPending liệt kê toàn bộ pending mà không tiêu thụ
-func (m *Manager) ListPending(ctx context.Context) ([]PendingCreate, error) {
-	vals, err := m.redis.LRange(ctx, pendingQueueKey, 0, -1).Result()
-	if err != nil {
-		return nil, err
-	}
-	res := make([]PendingCreate, 0, len(vals))
-	for _, v := range vals {
-		var p PendingCreate
-		if err := json.Unmarshal([]byte(v), &p); err == nil {
-			res = append(res, p)
-		}
-	}
-	return res, nil
-}
-
-// Room state operations
+// Rooms helpers
 func roomKey(roomID string) string { return "mm:room:" + roomID }
 func roomsIndexKey() string        { return "mm:rooms" }
 
@@ -120,7 +192,32 @@ func (m *Manager) ListRooms(ctx context.Context) ([]string, error) {
 
 // Health check simple ping with timeout
 func (m *Manager) Ping(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second) // TODO: use config timeout
 	defer cancel()
 	return m.redis.Ping(ctx).Err()
+}
+
+// ListOpenedTicketIDs: trả về danh sách ticket_id đang nằm trong queue OPENED
+func (m *Manager) ListOpenedTicketIDs(ctx context.Context) ([]string, error) {
+	return m.redis.LRange(ctx, openedTicketsKey, 0, -1).Result()
+}
+
+// ListOpenedTickets: lấy chi tiết ticket theo danh sách OPENED
+func (m *Manager) ListOpenedTickets(ctx context.Context) ([]Ticket, error) {
+	ids, err := m.ListOpenedTicketIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Ticket, 0, len(ids))
+	for _, id := range ids {
+		v, e := m.redis.Get(ctx, ticketKeyPrefix+id).Result()
+		if e != nil {
+			continue
+		}
+		var t Ticket
+		if json.Unmarshal([]byte(v), &t) == nil && t.Status == "OPENED" {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }

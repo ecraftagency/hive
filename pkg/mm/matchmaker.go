@@ -2,11 +2,12 @@ package mm
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"hive/pkg/store"
 	"hive/pkg/svrmgr"
+
+	"github.com/google/uuid"
 )
 
 type Manager struct {
@@ -18,64 +19,76 @@ func New(storeMgr *store.Manager, svrMgr *svrmgr.Manager) *Manager {
 	return &Manager{store: storeMgr, svr: svrMgr}
 }
 
-// CreateRoom chỉ enqueue yêu cầu tạo phòng, chưa liên hệ Nomad
-func (m *Manager) CreateRoom(ctx context.Context, roomName, playerID string) error {
-	return m.store.EnqueuePending(ctx, store.PendingCreate{RoomName: roomName, PlayerID: playerID, EnqueueAt: time.Now().Unix()})
+// SubmitJoinTicket: tạo ticket OPENED cho player
+func (m *Manager) SubmitJoinTicket(ctx context.Context, playerID string) (*store.Ticket, error) {
+	return m.store.CreateTicket(ctx, playerID)
 }
 
-// JoinRoom tìm pending request để ghép
-// Sau khi submit job, trả về ngay room_id và players; một goroutine sẽ poll và cập nhật RoomState khi alloc sẵn sàng
-func (m *Manager) JoinRoom(ctx context.Context, playerID string) (*store.RoomState, error) {
-	p, err := m.store.DequeuePending(ctx)
+// GetTicket: trả ticket theo id
+func (m *Manager) GetTicket(ctx context.Context, ticketID string) (*store.Ticket, error) {
+	return m.store.GetTicket(ctx, ticketID)
+}
+
+// CancelTicket: hủy ticket OPENED
+func (m *Manager) CancelTicket(ctx context.Context, ticketID string) error {
+	return m.store.CancelTicket(ctx, ticketID)
+}
+
+// TryMatch: ghép 2 ticket và tạo room OPENED, allocate server async
+func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
+	t1, t2, err := m.store.TryMatchPair(ctx)
 	if err != nil {
-		// không có pending
-		return nil, errors.New("no pending rooms")
-	}
-	if p == nil {
-		return nil, errors.New("no pending rooms")
-	}
-	roomID := p.RoomName
-	// chạy job trên Nomad
-	if err := m.svr.RunGameServer(roomID); err != nil {
 		return nil, err
 	}
-	players := []string{p.PlayerID, playerID}
-	// Trả về ngay; thông tin server sẽ được cập nhật sau
-	partial := &store.RoomState{
-		RoomID:    roomID,
-		Players:   players,
-		CreatedAt: time.Now().Unix(),
-	}
-	// Lưu partial để vòng sync không xóa ngay
-	_ = m.store.SaveRoomState(context.Background(), *partial)
-	// Nền: poll nomad lấy alloc/server info và lưu vào Redis khi sẵn sàng
+	roomID := uuid.New().String()
+	players := []string{t1.PlayerID, t2.PlayerID}
+	// mark matched
+	_ = m.store.MarkMatched(ctx, t1.TicketID, roomID)
+	_ = m.store.MarkMatched(ctx, t2.TicketID, roomID)
+	// save OPENED room
+	_ = m.store.SaveRoomState(ctx, store.RoomState{RoomID: roomID, Players: players, CreatedAt: time.Now().Unix(), Status: "OPENED"})
+	// allocate async
 	go func(rid string, plist []string, created int64) {
-		deadline := time.Now().Add(2 * time.Minute)
+		// allocation timeout handled by cron (per doc); here just attempt allocate
+		if err := m.svr.RunGameServer(rid); err != nil {
+			_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: err.Error()})
+			return
+		}
+		// poll room info until allocated and server is running
+		deadline := time.Now().Add(2 * time.Minute) // TODO: use config allocation timeout
 		for time.Now().Before(deadline) {
-			info, err := m.svr.GetRoomInfo(rid)
-			if err == nil && info != nil && info.HostIP != "" && len(info.Ports) > 0 {
+			info, e := m.svr.GetRoomInfo(rid)
+			if e == nil && info != nil && info.HostIP != "" && len(info.Ports) > 0 {
 				port := 0
-				if v, ok := info.Ports["http"]; ok {
+				if v, ok := info.Ports["http"]; ok && v > 0 {
 					port = v
 				} else {
+					// find first valid port
 					for _, vv := range info.Ports {
-						port = vv
-						break
+						if vv > 0 {
+							port = vv
+							break
+						}
 					}
 				}
-				_ = m.store.SaveRoomState(context.Background(), store.RoomState{
-					RoomID:       rid,
-					AllocationID: info.AllocationID,
-					ServerIP:     info.HostIP,
-					Port:         port,
-					Players:      plist,
-					CreatedAt:    created,
-				})
-				return
+				// ensure we have valid IP and port before marking FULFILLED
+				if port > 0 && info.HostIP != "" {
+					_ = m.store.SaveRoomState(context.Background(), store.RoomState{
+						RoomID:       rid,
+						AllocationID: info.AllocationID,
+						ServerIP:     info.HostIP,
+						Port:         port,
+						Players:      plist,
+						CreatedAt:    created,
+						Status:       "FULFILLED",
+					})
+					return
+				}
 			}
-			time.Sleep(2 * time.Second)
+			time.Sleep(2 * time.Second) // TODO: use config poll delay
 		}
-	}(roomID, players, partial.CreatedAt)
+		// leave OPENED for cron to timeout -> DEAD
+	}(roomID, players, time.Now().Unix())
 
-	return partial, nil
+	return &store.RoomState{RoomID: roomID, Players: players, CreatedAt: time.Now().Unix(), Status: "OPENED"}, nil
 }

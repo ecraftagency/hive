@@ -2,7 +2,6 @@ package cron
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"hive/pkg/store"
@@ -28,7 +27,7 @@ func New(storeMgr *store.Manager, nomadClient *api.Client, opts Options) *Runner
 		opts.GraceSeconds = 60
 	}
 	if opts.JobPrefix == "" {
-		opts.JobPrefix = "game-server-"
+		opts.JobPrefix = "game-server-" // Default prefix, should be set from config
 	}
 	if opts.Interval <= 0 {
 		opts.Interval = 10 * time.Second
@@ -45,10 +44,9 @@ TickerLoop:
 		case <-ctx.Done():
 			break TickerLoop
 		case <-time.After(r.opts.Interval):
-			// 1) Remove rooms in Redis that have no running job/allocation (sau grace)
+			// Only sync Redis state to match Nomad running jobs (one-way consistency)
+			// Keep stopped jobs for log inspection
 			r.syncRooms(ctx, jobs)
-			// 2) Stop stray Nomad jobs with prefix that are not present in Redis
-			r.stopStrayJobs(ctx, jobs)
 		}
 	}
 	close(r.stopped)
@@ -89,26 +87,5 @@ func (r *Runner) syncRooms(ctx context.Context, jobs *api.Jobs) {
 	}
 }
 
-func (r *Runner) stopStrayJobs(ctx context.Context, jobs *api.Jobs) {
-	list, _, err := jobs.List(nil)
-	if err != nil {
-		return
-	}
-	rids, err := r.store.ListRooms(ctx)
-	if err != nil {
-		return
-	}
-	redisSet := map[string]struct{}{}
-	for _, rid := range rids {
-		redisSet[rid] = struct{}{}
-	}
-	for _, j := range list {
-		if !strings.HasPrefix(j.Name, r.opts.JobPrefix) {
-			continue
-		}
-		jid := j.ID
-		if _, ok := redisSet[jid]; !ok {
-			_, _, _ = jobs.Deregister(jid, true, nil)
-		}
-	}
-}
+// stopStrayJobs removed - keep stopped jobs for log inspection
+// Only sync Redis state to match Nomad running jobs (one-way consistency)

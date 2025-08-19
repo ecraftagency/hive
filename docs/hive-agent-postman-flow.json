@@ -1,0 +1,544 @@
+{
+  "info": {
+    "name": "Hive Agent Ticket Flow",
+    "description": "Postman Flow cho quy trình ticket submit và polling của Hive Agent",
+    "schema": "https://schema.getpostman.com/json/flow/v1.0.0/flow.json",
+    "version": "1.0.0"
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "start",
+        "type": "start",
+        "name": "Bắt Đầu Quy Trình",
+        "description": "Bắt đầu quy trình ticket submit và polling",
+        "position": {
+          "x": 100,
+          "y": 100
+        },
+        "config": {
+          "variables": {
+            "player_id": "player123",
+            "max_poll_attempts": 60,
+            "poll_interval_ms": 2000
+          }
+        }
+      },
+      {
+        "id": "submit_ticket",
+        "type": "request",
+        "name": "Submit Ticket",
+        "description": "Gửi ticket để tham gia phòng game",
+        "position": {
+          "x": 300,
+          "y": 100
+        },
+        "config": {
+          "method": "POST",
+          "url": "{{base_url}}/tickets",
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"player_id\": \"{{player_id}}\"\n}"
+          }
+        }
+      },
+      {
+        "id": "check_ticket_response",
+        "type": "condition",
+        "name": "Kiểm Tra Response Ticket",
+        "description": "Kiểm tra response từ submit ticket",
+        "position": {
+          "x": 500,
+          "y": 100
+        },
+        "config": {
+          "condition": "{{response.status}} === 200 && {{response.body.ticket_id}}"
+        }
+      },
+      {
+        "id": "save_ticket_id",
+        "type": "set_variable",
+        "name": "Lưu Ticket ID",
+        "description": "Lưu ticket_id vào biến để sử dụng cho polling",
+        "position": {
+          "x": 700,
+          "y": 50
+        },
+        "config": {
+          "variable": "ticket_id",
+          "value": "{{response.body.ticket_id}}"
+        }
+      },
+      {
+        "id": "start_ticket_polling",
+        "type": "set_variable",
+        "name": "Khởi Tạo Polling",
+        "description": "Khởi tạo biến đếm cho polling",
+        "position": {
+          "x": 900,
+          "y": 50
+        },
+        "config": {
+          "variable": "poll_count",
+          "value": 0
+        }
+      },
+      {
+        "id": "poll_ticket_status",
+        "type": "request",
+        "name": "Poll Trạng Thái Ticket",
+        "description": "Kiểm tra trạng thái ticket mỗi 2 giây",
+        "position": {
+          "x": 1100,
+          "y": 50
+        },
+        "config": {
+          "method": "GET",
+          "url": "{{base_url}}/tickets/{{ticket_id}}",
+          "headers": {}
+        }
+      },
+      {
+        "id": "check_ticket_status",
+        "type": "condition",
+        "name": "Kiểm Tra Trạng Thái Ticket",
+        "description": "Kiểm tra trạng thái ticket để quyết định bước tiếp theo",
+        "position": {
+          "x": 1300,
+          "y": 50
+        },
+        "config": {
+          "condition": "{{response.body.status}} === 'MATCHED'"
+        }
+      },
+      {
+        "id": "check_ticket_expired",
+        "type": "condition",
+        "name": "Kiểm Tra Ticket Hết Hạn",
+        "description": "Kiểm tra xem ticket có bị từ chối hoặc hết hạn không",
+        "position": {
+          "x": 1300,
+          "y": 150
+        },
+        "config": {
+          "condition": "{{response.body.status}} === 'REJECTED' || {{response.body.status}} === 'EXPIRED'"
+        }
+      },
+      {
+        "id": "check_poll_limit",
+        "type": "condition",
+        "name": "Kiểm Tra Giới Hạn Polling",
+        "description": "Kiểm tra xem đã poll quá số lần cho phép chưa",
+        "position": {
+          "x": 1300,
+          "y": 250
+        },
+        "config": {
+          "condition": "{{poll_count}} < {{max_poll_attempts}}"
+        }
+      },
+      {
+        "id": "increment_poll_count",
+        "type": "set_variable",
+        "name": "Tăng Số Lần Polling",
+        "description": "Tăng biến đếm polling",
+        "position": {
+          "x": 1500,
+          "y": 250
+        },
+        "config": {
+          "variable": "poll_count",
+          "value": "{{poll_count + 1}}"
+        }
+      },
+      {
+        "id": "wait_before_poll",
+        "type": "delay",
+        "name": "Chờ Trước Khi Poll Lại",
+        "description": "Chờ 2 giây trước khi poll lại",
+        "position": {
+          "x": 1700,
+          "y": 250
+        },
+        "config": {
+          "duration": "{{poll_interval_ms}}"
+        }
+      },
+      {
+        "id": "save_room_id",
+        "type": "set_variable",
+        "name": "Lưu Room ID",
+        "description": "Lưu room_id khi ticket được matched",
+        "position": {
+          "x": 1500,
+          "y": 50
+        },
+        "config": {
+          "variable": "room_id",
+          "value": "{{response.body.room_id}}"
+        }
+      },
+      {
+        "id": "start_room_polling",
+        "type": "set_variable",
+        "name": "Khởi Tạo Room Polling",
+        "description": "Khởi tạo biến đếm cho room polling",
+        "position": {
+          "x": 1700,
+          "y": 50
+        },
+        "config": {
+          "variable": "room_poll_count",
+          "value": 0
+        }
+      },
+      {
+        "id": "poll_room_status",
+        "type": "request",
+        "name": "Poll Trạng Thái Phòng",
+        "description": "Kiểm tra trạng thái phòng để biết server đã sẵn sàng chưa",
+        "position": {
+          "x": 1900,
+          "y": 50
+        },
+        "config": {
+          "method": "GET",
+          "url": "{{base_url}}/rooms/{{room_id}}",
+          "headers": {}
+        }
+      },
+      {
+        "id": "check_room_status",
+        "type": "condition",
+        "name": "Kiểm Tra Trạng Thái Phòng",
+        "description": "Kiểm tra xem phòng đã sẵn sàng chưa",
+        "position": {
+          "x": 2100,
+          "y": 50
+        },
+        "config": {
+          "condition": "{{response.body.status}} === 'FULFILLED' && {{response.body.server_ip}} && {{response.body.port}}"
+        }
+      },
+      {
+        "id": "check_room_failed",
+        "type": "condition",
+        "name": "Kiểm Tra Phòng Thất Bại",
+        "description": "Kiểm tra xem phòng có bị lỗi không",
+        "position": {
+          "x": 2100,
+          "y": 150
+        },
+        "config": {
+          "condition": "{{response.body.status}} === 'DEAD'"
+        }
+      },
+      {
+        "id": "check_room_poll_limit",
+        "type": "condition",
+        "name": "Kiểm Tra Giới Hạn Room Polling",
+        "description": "Kiểm tra xem đã poll room quá số lần cho phép chưa",
+        "position": {
+          "x": 2100,
+          "y": 250
+        },
+        "config": {
+          "condition": "{{room_poll_count}} < {{max_poll_attempts}}"
+        }
+      },
+      {
+        "id": "increment_room_poll_count",
+        "type": "set_variable",
+        "name": "Tăng Số Lần Room Polling",
+        "description": "Tăng biến đếm room polling",
+        "position": {
+          "x": 2300,
+          "y": 250
+        },
+        "config": {
+          "variable": "room_poll_count",
+          "value": "{{room_poll_count + 1}}"
+        }
+      },
+      {
+        "id": "wait_before_room_poll",
+        "type": "delay",
+        "name": "Chờ Trước Khi Poll Room Lại",
+        "description": "Chờ 2 giây trước khi poll room lại",
+        "position": {
+          "x": 2500,
+          "y": 250
+        },
+        "config": {
+          "duration": "{{poll_interval_ms}}"
+        }
+      },
+      {
+        "id": "room_ready",
+        "type": "success",
+        "name": "Phòng Sẵn Sàng",
+        "description": "Phòng đã sẵn sàng, người chơi có thể kết nối",
+        "position": {
+          "x": 2300,
+          "y": 50
+        },
+        "config": {
+          "message": "Phòng đã sẵn sàng! Server IP: {{response.body.server_ip}}, Port: {{response.body.port}}"
+        }
+      },
+      {
+        "id": "handle_ticket_rejected",
+        "type": "error",
+        "name": "Ticket Bị Từ Chối",
+        "description": "Ticket bị từ chối do người chơi trùng lặp",
+        "position": {
+          "x": 700,
+          "y": 150
+        },
+        "config": {
+          "message": "Ticket bị từ chối: {{response.body.status}}"
+        }
+      },
+      {
+        "id": "handle_ticket_failed",
+        "type": "error",
+        "name": "Ticket Thất Bại",
+        "description": "Ticket bị từ chối hoặc hết hạn",
+        "position": {
+          "x": 1500,
+          "y": 150
+        },
+        "config": {
+          "message": "Ticket thất bại: {{response.body.status}}"
+        }
+      },
+      {
+        "id": "handle_poll_timeout",
+        "type": "error",
+        "name": "Polling Ticket Timeout",
+        "description": "Polling ticket quá thời gian cho phép",
+        "position": {
+          "x": 1500,
+          "y": 350
+        },
+        "config": {
+          "message": "Polling ticket timeout sau {{max_poll_attempts}} lần thử"
+        }
+      },
+      {
+        "id": "handle_poll_error",
+        "type": "error",
+        "name": "Lỗi Polling Ticket",
+        "description": "Lỗi khi polling trạng thái ticket",
+        "position": {
+          "x": 1100,
+          "y": 150
+        },
+        "config": {
+          "message": "Lỗi polling ticket: {{response.status}} - {{response.body}}"
+        }
+      },
+      {
+        "id": "handle_room_failed",
+        "type": "error",
+        "name": "Phòng Thất Bại",
+        "description": "Phòng bị đánh dấu là DEAD",
+        "position": {
+          "x": 2300,
+          "y": 150
+        },
+        "config": {
+          "message": "Phòng thất bại: {{response.body.fail_reason}}"
+        }
+      },
+      {
+        "id": "handle_room_poll_timeout",
+        "type": "error",
+        "name": "Polling Room Timeout",
+        "description": "Polling room quá thời gian cho phép",
+        "position": {
+          "x": 2300,
+          "y": 350
+        },
+        "config": {
+          "message": "Polling room timeout sau {{max_poll_attempts}} lần thử"
+        }
+      },
+      {
+        "id": "handle_room_poll_error",
+        "type": "error",
+        "name": "Lỗi Polling Room",
+        "description": "Lỗi khi polling trạng thái room",
+        "position": {
+          "x": 1900,
+          "y": 150
+        },
+        "config": {
+          "message": "Lỗi polling room: {{response.status}} - {{response.body}}"
+        }
+      },
+      {
+        "id": "handle_error",
+        "type": "error",
+        "name": "Lỗi Chung",
+        "description": "Xử lý lỗi chung",
+        "position": {
+          "x": 300,
+          "y": 150
+        },
+        "config": {
+          "message": "Lỗi: {{response.status}} - {{response.body}}"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "start_to_submit",
+        "source": "start",
+        "target": "submit_ticket"
+      },
+      {
+        "id": "submit_to_check",
+        "source": "submit_ticket",
+        "target": "check_ticket_response"
+      },
+      {
+        "id": "check_to_save",
+        "source": "check_ticket_response",
+        "target": "save_ticket_id",
+        "condition": "true"
+      },
+      {
+        "id": "check_to_rejected",
+        "source": "check_ticket_response",
+        "target": "handle_ticket_rejected",
+        "condition": "false"
+      },
+      {
+        "id": "save_to_start_poll",
+        "source": "save_ticket_id",
+        "target": "start_ticket_polling"
+      },
+      {
+        "id": "start_poll_to_poll",
+        "source": "start_ticket_polling",
+        "target": "poll_ticket_status"
+      },
+      {
+        "id": "poll_to_check_status",
+        "source": "poll_ticket_status",
+        "target": "check_ticket_status"
+      },
+      {
+        "id": "check_status_to_save_room",
+        "source": "check_ticket_status",
+        "target": "save_room_id",
+        "condition": "true"
+      },
+      {
+        "id": "check_status_to_check_expired",
+        "source": "check_ticket_status",
+        "target": "check_ticket_expired",
+        "condition": "false"
+      },
+      {
+        "id": "check_expired_to_failed",
+        "source": "check_ticket_expired",
+        "target": "handle_ticket_failed",
+        "condition": "true"
+      },
+      {
+        "id": "check_expired_to_check_limit",
+        "source": "check_ticket_expired",
+        "target": "check_poll_limit",
+        "condition": "false"
+      },
+      {
+        "id": "check_limit_to_increment",
+        "source": "check_poll_limit",
+        "target": "increment_poll_count",
+        "condition": "true"
+      },
+      {
+        "id": "check_limit_to_timeout",
+        "source": "check_poll_limit",
+        "target": "handle_poll_timeout",
+        "condition": "false"
+      },
+      {
+        "id": "increment_to_wait",
+        "source": "increment_poll_count",
+        "target": "wait_before_poll"
+      },
+      {
+        "id": "wait_to_poll",
+        "source": "wait_before_poll",
+        "target": "poll_ticket_status"
+      },
+      {
+        "id": "save_room_to_start_room_poll",
+        "source": "save_room_id",
+        "target": "start_room_polling"
+      },
+      {
+        "id": "start_room_poll_to_poll_room",
+        "source": "start_room_polling",
+        "target": "poll_room_status"
+      },
+      {
+        "id": "poll_room_to_check_room_status",
+        "source": "poll_room_status",
+        "target": "check_room_status"
+      },
+      {
+        "id": "check_room_status_to_ready",
+        "source": "check_room_status",
+        "target": "room_ready",
+        "condition": "true"
+      },
+      {
+        "id": "check_room_status_to_check_failed",
+        "source": "check_room_status",
+        "target": "check_room_failed",
+        "condition": "false"
+      },
+      {
+        "id": "check_room_failed_to_failed",
+        "source": "check_room_failed",
+        "target": "handle_room_failed",
+        "condition": "true"
+      },
+      {
+        "id": "check_room_failed_to_check_limit",
+        "source": "check_room_failed",
+        "target": "check_room_poll_limit",
+        "condition": "false"
+      },
+      {
+        "id": "check_room_limit_to_increment",
+        "source": "check_room_poll_limit",
+        "target": "increment_room_poll_count",
+        "condition": "true"
+      },
+      {
+        "id": "check_room_limit_to_timeout",
+        "source": "check_room_poll_limit",
+        "target": "handle_room_poll_timeout",
+        "condition": "false"
+      },
+      {
+        "id": "increment_room_to_wait",
+        "source": "increment_room_poll_count",
+        "target": "wait_before_room_poll"
+      },
+      {
+        "id": "wait_room_to_poll",
+        "source": "wait_before_room_poll",
+        "target": "poll_room_status"
+      }
+    ]
+  }
+}

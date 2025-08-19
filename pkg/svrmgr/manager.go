@@ -10,12 +10,36 @@ import (
 
 // Manager chịu trách nhiệm tương tác với Nomad API
 type Manager struct {
-	client *api.Client
+	client      *api.Client
+	datacenters []string
 }
 
-// Tạm thời map private IP -> public IP cho phản hồi RoomInfo
-var privateToPublicIP = map[string]string{
-	"172.26.15.163": "52.221.213.97",
+// SetDatacenters sets the datacenters for Nomad jobs
+func (m *Manager) SetDatacenters(datacenters []string) {
+	m.datacenters = datacenters
+}
+
+// IP mapping config - should be loaded from config
+type IPMapping struct {
+	PrivateIP string `json:"private_ip"`
+	PublicIP  string `json:"public_ip"`
+}
+
+// IPMappingConfig holds IP mapping configuration
+type IPMappingConfig struct {
+	Mappings []IPMapping `json:"mappings"`
+}
+
+// Default empty mapping - should be populated from config
+var ipMappingConfig = &IPMappingConfig{
+	Mappings: []IPMapping{},
+}
+
+// SetIPMappingConfig sets the IP mapping configuration
+func SetIPMappingConfig(config *IPMappingConfig) {
+	if config != nil {
+		ipMappingConfig = config
+	}
 }
 
 // RoomInfo mô tả thông tin phân bổ của một room/job
@@ -79,7 +103,7 @@ func (m *Manager) RunGameServer(roomID string) error {
 		ID:          &roomID,
 		Name:        &jobName,
 		Type:        &jobType,
-		Datacenters: []string{"dc1"},
+		Datacenters: m.datacenters, // Set from config
 		TaskGroups:  []*api.TaskGroup{tg},
 	}
 
@@ -96,7 +120,7 @@ func (m *Manager) GetRoomInfo(roomID string) (*RoomInfo, error) {
 	if len(stubs) == 0 {
 		return nil, fmt.Errorf("no allocations for job %s", roomID)
 	}
-	// Chọn alloc đang chạy nếu có, không thì lấy alloc đầu tiên
+	// Chỉ lấy alloc đang chạy, không lấy alloc đã stop/failed
 	var chosen *api.AllocationListStub
 	for _, s := range stubs {
 		if s.ClientStatus == "running" {
@@ -105,7 +129,7 @@ func (m *Manager) GetRoomInfo(roomID string) (*RoomInfo, error) {
 		}
 	}
 	if chosen == nil {
-		chosen = stubs[0]
+		return nil, fmt.Errorf("no running allocation for job %s", roomID)
 	}
 
 	alloc, _, err := m.client.Allocations().Info(chosen.ID, nil)
@@ -176,8 +200,11 @@ func (m *Manager) GetRoomInfo(roomID string) (*RoomInfo, error) {
 	}
 
 	// Áp dụng map private->public nếu có
-	if pub, ok := privateToPublicIP[nodeIP]; ok && pub != "" {
-		nodeIP = pub
+	for _, mapping := range ipMappingConfig.Mappings {
+		if mapping.PrivateIP == nodeIP && mapping.PublicIP != "" {
+			nodeIP = mapping.PublicIP
+			break
+		}
 	}
 
 	info := &RoomInfo{
