@@ -50,3 +50,7 @@ run-client: client
 # Run Web
 run-web: web
 	./bin/web
+
+# Test Server Manager
+test-server-manager:
+	go run test/server_manager_scenario.go

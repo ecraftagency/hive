@@ -1,3 +1,14 @@
+<golden_rules>
+- Ngôn ngữ: Luôn trả lời bằng tiếng Việt.
+- Phong cách: Code ngắn gọn, chạy được (MVP), ưu tiên rõ ràng.
+- Hạn chế: Không tự tạo file test/MD, không tự chạy test khi chưa hỏi.
+- Quy trình: Phải hỏi trước khi test hoặc chạy lệnh tốn tài nguyên.
+- Chuẩn code: Tên biến rõ nghĩa, tránh viết tắt, early return.
+- Output: Chỉ báo cáo ý chính, tránh dài dòng.
+- Khi cập nhật thay đổi các dto (request, response struct), phải xem lại tất cả các document, hoặc toàn bộ các reference từ các package khác hoặc những dependency code để tiến hành cập nhật tương ứng
+- các package store, mm và svrmng cần phải độc lập (portable) hạn chế hardcode giá trị vì có khá nhiều cmd khác nhau lệ thuộc vào. tránh trường hợp mở rộng tính năng cho 1 cmd/ nào đó nhưng sẽ lại ảnh hưởng logic của một cmd khác. VD thay đổi manager để update cho agentv2 phải đảm bảo không bị ảnh hưởng đến agentv2, do cả hai đều phụ thuộc vào pkg/svrmng
+</golden_rules>
+
 # Kiến trúc tổng thể
 
 Hệ thống quản lý dedicated server phục vụ game theo mô hình: Agent (điều phối) + Nomad (orchestrator) + Game Server (exec) + Client (CLI/Web).

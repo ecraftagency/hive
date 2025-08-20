@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/nomad/api"
 )
@@ -35,10 +36,16 @@ var ipMappingConfig = &IPMappingConfig{
 	Mappings: []IPMapping{},
 }
 
-// SetIPMappingConfig sets the IP mapping configuration
+// SetIPMappingConfig sets the IP mapping configuration. If none provided,
+// use a sensible default mapping for production.
 func SetIPMappingConfig(config *IPMappingConfig) {
-	if config != nil {
+	if config != nil && len(config.Mappings) > 0 {
 		ipMappingConfig = config
+		return
+	}
+	// Fallback default when no ENV/IP mappings provided
+	ipMappingConfig = &IPMappingConfig{
+		Mappings: []IPMapping{{PrivateIP: "172.26.15.163", PublicIP: "52.221.213.97"}},
 	}
 }
 
@@ -60,6 +67,42 @@ func New(address string) (*Manager, error) {
 	return &Manager{client: cli}, nil
 }
 
+// CountRunningJobsByNamePrefix đếm số job có tên bắt đầu bằng prefix và đang có allocation chạy
+func (m *Manager) CountRunningJobsByNamePrefix(prefix string) (int, error) {
+	if prefix == "" {
+		prefix = "game-server-"
+	}
+	jobs, _, err := m.client.Jobs().List(nil)
+	if err != nil {
+		return 0, err
+	}
+	targetJobIDs := map[string]struct{}{}
+	for _, j := range jobs {
+		if j == nil {
+			continue
+		}
+		if j.Name != "" && strings.HasPrefix(j.Name, prefix) {
+			if j.ID != "" {
+				targetJobIDs[j.ID] = struct{}{}
+			}
+		}
+	}
+	count := 0
+	for jobID := range targetJobIDs {
+		stubs, _, err := m.client.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			continue
+		}
+		for _, s := range stubs {
+			if s != nil && s.ClientStatus == "running" {
+				count++
+				break
+			}
+		}
+	}
+	return count, nil
+}
+
 // RunGameServer tạo và đăng ký một batch job cho game server với dynamic port
 func (m *Manager) RunGameServer(roomID string) error {
 	jobName := fmt.Sprintf("game-server-%s", roomID)
@@ -67,7 +110,7 @@ func (m *Manager) RunGameServer(roomID string) error {
 	count := 1
 	tgName := "game-server"
 	taskName := "server"
-	driver := "exec"
+	driver := "raw_exec"
 
 	// Task group & task
 	tg := api.NewTaskGroup(tgName, count)
@@ -86,8 +129,22 @@ func (m *Manager) RunGameServer(roomID string) error {
 		Disabled:      &logsDisabled,
 	}
 
+	// Restart policy - no restart attempts
+	attempts := 0
+	restartMode := "fail"
+	task.RestartPolicy = &api.RestartPolicy{
+		Attempts: &attempts,
+		Mode:     &restartMode,
+	}
+
 	// Dynamic host port with label "http"
+	cpu := 100
+	memoryMB := 100
+	diskMB := 10
 	task.Require(&api.Resources{
+		CPU:      &cpu,
+		MemoryMB: &memoryMB,
+		DiskMB:   &diskMB,
 		Networks: []*api.NetworkResource{
 			{
 				DynamicPorts: []api.Port{
@@ -105,6 +162,76 @@ func (m *Manager) RunGameServer(roomID string) error {
 		Type:        &jobType,
 		Datacenters: m.datacenters, // Set from config
 		TaskGroups:  []*api.TaskGroup{tg},
+	}
+
+	_, _, err := m.client.Jobs().Register(job, nil)
+	return err
+}
+
+// RunGameServerV2 tạo và đăng ký một batch job cho game server với tùy chỉnh resources, command và arguments
+func (m *Manager) RunGameServerV2(roomID string, cpu int, memoryMB int, command string, args []string) error {
+	jobName := fmt.Sprintf("game-server-%s", roomID)
+	jobType := "batch"
+	count := 1
+	tgName := "game-server"
+	taskName := "server"
+	driver := "raw_exec"
+
+	// Task group & task
+	tg := api.NewTaskGroup(tgName, count)
+	task := api.NewTask(taskName, driver)
+	task.SetConfig("command", command)
+
+	// Use custom args if provided, otherwise default to port and roomID
+	if len(args) > 0 {
+		task.SetConfig("args", args)
+	} else {
+		task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID})
+	}
+
+	// Log rotation config
+	maxFiles := 5
+	maxFileSizeMB := 10
+	logsDisabled := false
+	task.LogConfig = &api.LogConfig{
+		MaxFiles:      &maxFiles,
+		MaxFileSizeMB: &maxFileSizeMB,
+		Disabled:      &logsDisabled,
+	}
+
+	// Restart policy - no restart attempts
+	attempts := 0
+	restartMode := "fail"
+	task.RestartPolicy = &api.RestartPolicy{
+		Attempts: &attempts,
+		Mode:     &restartMode,
+	}
+
+	// Resources with custom CPU, Memory and Disk
+	diskMB := 10
+	resources := &api.Resources{
+		CPU:      &cpu,
+		MemoryMB: &memoryMB,
+		DiskMB:   &diskMB,
+		Networks: []*api.NetworkResource{
+			{
+				DynamicPorts: []api.Port{
+					{Label: "http"},
+				},
+			},
+		},
+	}
+	task.Require(resources)
+
+	tg.Tasks = []*api.Task{task}
+
+	job := &api.Job{
+		ID:          &roomID,
+		Name:        &jobName,
+		Type:        &jobType,
+		Datacenters: m.datacenters,
+		TaskGroups:  []*api.TaskGroup{tg},
+		Meta:        map[string]string{"created_at": time.Now().UTC().Format(time.RFC3339)},
 	}
 
 	_, _, err := m.client.Jobs().Register(job, nil)

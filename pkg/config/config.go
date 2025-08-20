@@ -141,7 +141,7 @@ var defaults = map[string]string{
 	// Nomad Configuration
 	"NOMAD_ADDRESS":     "http://localhost:4646",       // Default Nomad API endpoint
 	"NOMAD_DATACENTERS": "dc1",                         // Default datacenter
-	"NOMAD_IP_MAPPINGS": "172.26.15.163:52.221.213.97", // Default IP mapping
+	"NOMAD_IP_MAPPINGS": "172.26.15.163:52.221.213.97", // Default IP mapping (fallback)
 
 	// Matchmaking Configuration
 	"TICKET_TTL_SECONDS":            "120", // 2 minutes - ticket validity period

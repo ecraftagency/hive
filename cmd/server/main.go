@@ -110,7 +110,7 @@ func main() {
 
 	players := newPlayerStore()
 	heartbeatTTL := 10 * time.Second
-	initialGrace := 10 * time.Second // bắt đầu kiểm tra sau 10s
+	initialGrace := 20 * time.Second // bắt đầu kiểm tra sau 20s
 
 	// Web UI
 	r.GET("/", func(c *gin.Context) {
