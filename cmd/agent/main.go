@@ -36,6 +36,8 @@ func main() {
 	// Init subsystems
 	storeMgr := store.New(cfg.Redis.URL)
 	store.SetTicketTTL(cfg.Matchmaking.TicketTTL) // Set TTL from config
+	store.SetAllocationTimeout(cfg.Matchmaking.AllocationTimeout)
+	store.SetTerminalTTL(cfg.Matchmaking.TerminalTTL)
 	if err := storeMgr.Ping(context.Background()); err != nil {
 		log.Fatal("redis not available:", err)
 	}
@@ -45,6 +47,7 @@ func main() {
 	}
 	// Set Nomad configs
 	svrMgr.SetDatacenters(cfg.Nomad.Datacenters)
+	svrMgr.SetBearerToken(cfg.Auth.BearerToken)
 	ipMappings := []svrmgr.IPMapping{}
 	for _, mapping := range cfg.Nomad.IPMappings {
 		ipMappings = append(ipMappings, svrmgr.IPMapping{
@@ -69,7 +72,7 @@ func main() {
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://52.221.213.97:8082"},
 		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type"},
+		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: false,
 		MaxAge:           12 * time.Hour,
 	}))
@@ -83,6 +86,7 @@ func main() {
 		openTickets, _ := storeMgr.ListOpenedTickets(ctx)
 		openedRoomsIDs, _ := storeMgr.ListRooms(ctx) // we only have generic rooms index; load and filter by status
 		openedRooms := []store.RoomState{}
+		activedRooms := []store.RoomState{}
 		fulfilledRooms := []store.RoomState{}
 		deadRooms := []store.RoomState{}
 		for _, rid := range openedRoomsIDs {
@@ -90,6 +94,8 @@ func main() {
 				switch st.Status {
 				case "OPENED":
 					openedRooms = append(openedRooms, *st)
+				case "ACTIVED":
+					activedRooms = append(activedRooms, *st)
 				case "FULFILLED":
 					fulfilledRooms = append(fulfilledRooms, *st)
 				case "DEAD":
@@ -100,6 +106,7 @@ func main() {
 		c.JSON(http.StatusOK, dto.AdminOverviewResponse{
 			OpenTickets:    openTickets,
 			OpenedRooms:    openedRooms,
+			ActivedRooms:   activedRooms,
 			FulfilledRooms: fulfilledRooms,
 			DeadRooms:      deadRooms,
 		})
@@ -180,6 +187,62 @@ func main() {
 		})
 	})
 
+	// Shutdown callback từ server → Agent
+	r.POST("/rooms/:room_id/shutdown", func(c *gin.Context) {
+		rid := c.Param("room_id")
+		if rid == "" {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{ErrorCode: dto.ErrCodeMissingRoomID, Error: "room_id required"})
+			return
+		}
+		// Xác thực token Authorization: Bearer <token>
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, dto.ErrorResponse{ErrorCode: dto.ErrCodeUnauthorized, Error: "missing authorization header"})
+			return
+		}
+		expectedToken := "Bearer " + cfg.Auth.BearerToken
+		if authHeader != expectedToken {
+			c.JSON(http.StatusUnauthorized, dto.ErrorResponse{ErrorCode: dto.ErrCodeUnauthorized, Error: "invalid authorization token"})
+			return
+		}
+		var body dto.ShutdownRequest
+		if err := c.BindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{ErrorCode: dto.ErrCodeInvalidRequest, Error: fmt.Sprintf("invalid shutdown request: %v", err)})
+			return
+		}
+		// Validate reason là một trong những giá trị hợp lệ
+		validReasons := map[string]bool{
+			"no_clients":           true,
+			"client_disconnected":  true,
+			"afk_timeout":          true,
+			"game_cycle_completed": true,
+			"signal_received":      true,
+		}
+		if !validReasons[body.Reason] {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{ErrorCode: dto.ErrCodeInvalidRequest, Error: fmt.Sprintf("invalid reason: %s. Valid reasons: no_clients, client_disconnected, afk_timeout, game_cycle_completed, signal_received", body.Reason)})
+			return
+		}
+		st, err := storeMgr.GetRoomState(c, rid)
+		if err != nil || st == nil {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse{ErrorCode: dto.ErrCodeRoomNotFound, Error: "room not found"})
+			return
+		}
+		if st.Status != "ACTIVED" {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{ErrorCode: dto.ErrCodeInvalidRequest, Error: fmt.Sprintf("room status is %s, not ACTIVED", st.Status)})
+			return
+		}
+		if body.At == 0 {
+			body.At = time.Now().Unix()
+		}
+		// set FULFILLED với end_reason và graceful_at
+		st.Status = "FULFILLED"
+		st.EndReason = body.Reason
+		st.FulfilledAt = body.At
+		st.GracefulAt = body.At
+		_ = storeMgr.SaveRoomState(c, *st)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
 	// legacy rooms list (giữ tạm)
 	r.GET("/rooms", func(c *gin.Context) {
 		ctx := c
@@ -244,5 +307,5 @@ func main() {
 		c.JSON(http.StatusOK, dto.ProxyHeartbeatResponse{OK: true})
 	})
 
-	log.Fatal(r.Run(":8080"))
+	log.Fatal(r.Run(":" + cfg.Server.Port))
 }

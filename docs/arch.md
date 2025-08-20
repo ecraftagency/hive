@@ -15,17 +15,18 @@ Hệ thống quản lý dedicated server phục vụ game theo mô hình: Agent 
 
 ## Thành phần
 - Agent (Go + Gin):
-  - Cung cấp API: tạo vé create_room (xếp hàng), join_room (match & launch job), liệt kê rooms, xem room info.
+  - Cung cấp API: `POST /tickets`, `GET /tickets/:id`, `POST /tickets/:id/cancel`, `GET /rooms/:room_id`, `GET /admin/overview`. Không còn `create_room`/`join_room` legacy trong flow mới.
   - Kết nối Nomad qua SDK (`github.com/hashicorp/nomad/api`) để đăng ký job `game-server-<room_id>` (driver exec), cấp port động, truyền `room_id` làm đối số thứ 2 cho server.
-  - Lưu trạng thái phòng vào Redis (`github.com/redis/go-redis/v9`): danh sách người chơi, room_id, allocation_id, server_ip, port.
-  - Chạy cron đồng bộ: xóa room “zombie” trong Redis nếu không còn job/alloc, dừng các job `game-server-*` lạc loài.
-  - Web UI `/ui`: bảng Waiting/Matched, auto-refresh 3s.
+  - Lưu trạng thái phòng vào Redis (`github.com/redis/go-redis/v9`): danh sách người chơi, room_id, allocation_id, server_ip, port, trạng thái `OPENED|ACTIVED|DEAD|FULFILLED`.
+  - Chạy cron đồng bộ: đảm bảo `count(RUNNING game-server jobs) == count(ACTIVED rooms)`. Dừng job nếu room `DEAD`/`FULFILLED`. Mark `ACTIVED` room không có job → `DEAD(server_crash)`. Mark `OPENED` timeout → `DEAD(alloc_timeout)`. Terminal rooms có TTL 60s.
+  - Web UI `/ui`: bảng Tickets/Opened/Actived/Fulfilled/Dead, auto-refresh 3s.
 
 - Game Server (Go + Gin):
-  - Nhận port (arg1) và `room_id` (arg2) từ Nomad, lắng nghe trên host port động.
+  - Nhận port (arg1), `room_id` (arg2), và `bearer_token` (arg3) từ Nomad, lắng nghe trên host port động.
   - Endpoint `GET /heartbeat?player_id=...`: ghi nhận heartbeat, CORS đã bật để browser đọc được response.
   - Endpoint `GET /players`: trả danh sách người chơi cùng trạng thái connected/disconnected.
-  - UI `/`: hiển thị room, số client connected, bảng players, log. Tự động tắt nếu có client disconnected >10s; bắt đầu kiểm tra sau 10s.
+  - Graceful shutdown: gửi `POST /rooms/:room_id/shutdown` đến Agent với `Authorization: Bearer <token>` khi no clients, client disconnect, hoặc nhận signal.
+  - UI `/`: hiển thị room, số client connected, bảng players, log. Tự động tắt nếu có client disconnected >10s; bắt đầu kiểm tra sau 20s.
 
 - Client:
   - CLI (Go) và Web (Go render HTML + JS). Web client cho phép nhập `player_id`, tạo/join room, poll server info, gửi heartbeat định kỳ 3s.
@@ -48,8 +49,8 @@ Hệ thống quản lý dedicated server phục vụ game theo mô hình: Agent 
 ```mermaid
 graph LR
   subgraph Clients
-    WC["Web Client"] -->|"create_room / join_room"| AG["Agent"]
-    CLI["CLI Client"] -->|"create_room / join_room"| AG
+    WC["Web Client"] -->|"tickets / rooms"| AG["Agent"]
+    CLI["CLI Client"] -->|"tickets / rooms"| AG
   end
 
   AG -->|"enqueue/read state"| RD[("Redis")]
@@ -61,44 +62,72 @@ graph LR
   GS -->|"/players"| WC
   GS -.->|"UI /"| GSU["Server UI"]
 
-  AG -->|"/room(s) info"| WC
+  AG -->|"/rooms info"| WC
 ```
 
 ## Sơ đồ tuần tự
 
-### create_room (enqueue only)
+### Tickets & Matchmaking (mới)
 ```mermaid
 sequenceDiagram
-  participant WC as Web/CLI Client
-  participant AG as Agent
-  participant RD as Redis
+  participant C as Client (Web/CLI)
+  participant A as Agent
+  participant R as Redis
+  participant N as Nomad
+  participant S as Game Server
 
-  WC->>AG: GET /create_room?room_id&player_id
-  AG->>RD: Enqueue Pending(room_name, player_id)
-  RD-->>AG: OK
-  AG-->>WC: {message: "room enqueued"}
+  C->>A: POST /tickets { player_id }
+  A->>R: Save ticket OPENED (TTL)
+  C->>A: GET /tickets/:id (poll)
+  alt not matched
+    A-->>C: { status: OPENED }
+  else matched
+    A->>A: room_id = UUID()
+    A->>R: Save room { status: OPENED, players }
+    A-->>C: { status: MATCHED, room_id }
+    par allocate
+      A->>N: register job game-server-<room_id>
+      N-->>A: running alloc or fail
+      alt double-check ok
+        A->>R: Update room { status: ACTIVED, server_ip, port, allocation_id }
+      else timeout/fail
+        A->>R: Update room { status: DEAD, fail_reason }
+      end
+    end
+    C->>A: GET /rooms/:room_id (poll)
+    A-->>C: { status: ACTIVED|DEAD, ... }
+  end
 ```
 
-### join_room (match + launch job)
+### Graceful Shutdown Flow
 ```mermaid
 sequenceDiagram
-  participant WC as Web/CLI Client
-  participant AG as Agent
-  participant RD as Redis
-  participant NM as Nomad
-  participant GS as Game Server
+  participant A as Agent
+  participant R as Redis
+  participant N as Nomad
+  participant S as Game Server
 
-  WC->>AG: GET /join_room?player_id
-  AG->>RD: Dequeue Pending()
-  RD-->>AG: Pending(room_name, player_id_A)
-  note over AG: room_id = room_name
-  AG->>NM: Jobs.Register(job: game-server-<room_id>\nargs: [${NOMAD_PORT_http}, room_id])
-  AG-->>WC: {room_id, players:[A, B]} (partial)
-  AG->>NM: Poll allocations until running
-  NM-->>AG: Allocation(host_ip, port)
-  AG->>RD: Save RoomState(room_id, allocation_id, server_ip, port, players)
-  WC->>AG: GET /room/<room_id> (poll)
-  AG-->>WC: {host_ip, ports:{http:port}}
-  WC->>GS: GET http://host:port/heartbeat?player_id
-  GS-->>WC: 200 OK
+  Note over S: Server phát hiện điều kiện shutdown
+  S->>A: POST /rooms/:id/shutdown {reason, at} + Authorization: Bearer <token>
+  A->>A: Validate token
+  A->>R: Update room { status: FULFILLED, end_reason, graceful_at, fulfilled_at } (TTL 60s)
+  A-->>S: 200 OK
+  Note over S: Server shutdown sau khi callback thành công
+  Note over A,N: Cron job dừng Nomad job tương ứng
+```
+
+### Server Crash Detection
+```mermaid
+sequenceDiagram
+  participant A as Agent (Cron)
+  participant R as Redis
+  participant N as Nomad
+
+  Note over A: Cron job chạy mỗi 10s
+  A->>N: List running jobs
+  A->>R: List rooms
+  alt ACTIVED room không có running job
+    A->>R: Update room { status: DEAD, fail_reason: server_crash, dead_at } (TTL 60s)
+    A->>N: Stop job
+  end
 ```

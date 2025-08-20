@@ -26,6 +26,9 @@ type Config struct {
 
 	// Timeout config - Various timeout values
 	Timeout TimeoutConfig `json:"timeout"`
+
+	// Auth config - Secrets/tokens for callbacks
+	Auth AuthConfig `json:"auth"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -91,6 +94,11 @@ type MatchmakingConfig struct {
 	// Type: time.Duration, Format: "2s", "5s", "10s"
 	// Range: 1s - 30s (recommended: 2-5s)
 	AllocationPollDelay time.Duration `json:"allocation_poll_delay"`
+
+	// TerminalTTL - How long to retain terminal room states (DEAD, FULFILLED)
+	// Type: time.Duration, Format: "60s", "1m"
+	// Range: 10s - 10m (recommended: 60s)
+	TerminalTTL time.Duration `json:"terminal_ttl"`
 }
 
 // CronConfig holds background task configuration
@@ -129,6 +137,13 @@ type TimeoutConfig struct {
 	ServerContext time.Duration `json:"server_context"`
 }
 
+// AuthConfig holds secrets/tokens used by subsystems
+type AuthConfig struct {
+	// BearerToken - token để server gửi shutdown callback về agent
+	// ENV: AGENT_BEARER_TOKEN; Default: 1234abcd
+	BearerToken string `json:"bearer_token"`
+}
+
 // Default values for all configuration options
 // These values are used when environment variables are not set
 var defaults = map[string]string{
@@ -147,6 +162,7 @@ var defaults = map[string]string{
 	"TICKET_TTL_SECONDS":            "120", // 2 minutes - ticket validity period
 	"ALLOCATION_TIMEOUT_MINUTES":    "2",   // 2 minutes - max wait for server allocation
 	"ALLOCATION_POLL_DELAY_SECONDS": "2",   // 2 seconds - delay between allocation checks
+	"TERMINAL_TTL_SECONDS":          "60",  // 60 seconds - keep DEAD/FULFILLED rooms
 
 	// Cron Configuration
 	"CRON_GRACE_SECONDS":    "60",           // 1 minute - grace period before cleanup
@@ -157,6 +173,9 @@ var defaults = map[string]string{
 	"HTTP_CLIENT_TIMEOUT_SECONDS":    "5", // 5 seconds - HTTP client timeout
 	"REDIS_PING_TIMEOUT_SECONDS":     "2", // 2 seconds - Redis ping timeout
 	"SERVER_CONTEXT_TIMEOUT_SECONDS": "5", // 5 seconds - server context timeout
+
+	// Auth
+	"AGENT_BEARER_TOKEN": "1234abcd",
 }
 
 // Load creates a new Config with values from environment variables or defaults
@@ -177,6 +196,7 @@ func Load() *Config {
 			TicketTTL:           getDurationEnv("TICKET_TTL_SECONDS", defaults["TICKET_TTL_SECONDS"]) * time.Second,
 			AllocationTimeout:   getDurationEnv("ALLOCATION_TIMEOUT_MINUTES", defaults["ALLOCATION_TIMEOUT_MINUTES"]) * time.Minute,
 			AllocationPollDelay: getDurationEnv("ALLOCATION_POLL_DELAY_SECONDS", defaults["ALLOCATION_POLL_DELAY_SECONDS"]) * time.Second,
+			TerminalTTL:         getDurationEnv("TERMINAL_TTL_SECONDS", defaults["TERMINAL_TTL_SECONDS"]) * time.Second,
 		},
 		Cron: CronConfig{
 			GraceSeconds: getInt64Env("CRON_GRACE_SECONDS", defaults["CRON_GRACE_SECONDS"]),
@@ -187,6 +207,9 @@ func Load() *Config {
 			HTTPClient:    getDurationEnv("HTTP_CLIENT_TIMEOUT_SECONDS", defaults["HTTP_CLIENT_TIMEOUT_SECONDS"]) * time.Second,
 			RedisPing:     getDurationEnv("REDIS_PING_TIMEOUT_SECONDS", defaults["REDIS_PING_TIMEOUT_SECONDS"]) * time.Second,
 			ServerContext: getDurationEnv("SERVER_CONTEXT_TIMEOUT_SECONDS", defaults["SERVER_CONTEXT_TIMEOUT_SECONDS"]) * time.Second,
+		},
+		Auth: AuthConfig{
+			BearerToken: getEnv("AGENT_BEARER_TOKEN", defaults["AGENT_BEARER_TOKEN"]),
 		},
 	}
 

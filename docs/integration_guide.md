@@ -142,7 +142,9 @@ Lấy thông tin chi tiết về một phòng cụ thể.
   "port": 26793,
   "players": ["player1", "player2"],
   "created_at_unix": 1755620466,
-  "status": "OPENED|FULFILLED|DEAD"
+  "status": "OPENED|ACTIVED|DEAD|FULFILLED",
+  "fail_reason": "alloc_timeout|nomad_error|server_crash",
+  "end_reason": "no_clients|client_disconnected|afk_timeout|game_cycle_completed"
 }
 ```
 
@@ -167,6 +169,11 @@ Lấy thông tin chi tiết về một phòng cụ thể.
 - `players`: Mảng các ID người chơi trong phòng
 - `created_at_unix`: Timestamp Unix khi phòng được tạo
 - `status`: Trạng thái phòng (chỉ có trong trạng thái Redis)
+  - `OPENED`: Vừa tạo, đang allocate
+  - `ACTIVED`: Allocate ok và readiness đạt (double-check pass)
+  - `DEAD`: Allocate thất bại/timeout (terminal, TTL ngắn)
+  - `FULFILLED`: Kết thúc vòng chơi/graceful shutdown (terminal, TTL ngắn)
+- `fail_reason`: Lý do thất bại khi `DEAD`
 - `node_id`: ID node Nomad (chỉ có trong thông tin Nomad)
 
 **Response Lỗi:**
@@ -199,6 +206,17 @@ Lấy tổng quan toàn diện về tất cả trạng thái hệ thống (chỉ
       "status": "OPENED"
     }
   ],
+  "actived_rooms": [
+    {
+      "room_id": "uuid-string",
+      "allocation_id": "uuid-string",
+      "server_ip": "52.221.213.97",
+      "port": 26793,
+      "players": ["player1", "player2"],
+      "created_at_unix": 1755620466,
+      "status": "ACTIVED"
+    }
+  ],
   "fulfilled_rooms": [
     {
       "room_id": "uuid-string",
@@ -214,7 +232,7 @@ Lấy tổng quan toàn diện về tất cả trạng thái hệ thống (chỉ
     {
       "room_id": "uuid-string",
       "players": ["player1", "player2"],
-      "fail_reason": "allocation timeout",
+      "fail_reason": "alloc_timeout|nomad_error|server_crash",
       "created_at_unix": 1755620466,
       "status": "DEAD"
     }
@@ -256,17 +274,17 @@ Tất cả response lỗi đều theo định dạng này:
 
 ---
 
-## PHẦN 2: Luồng Gửi Ticket và Polling
+## PHẦN 2: Luồng Gửi Ticket và Polling (cập nhật)
 
 ### Tổng Quan
 Hệ thống ticket triển khai state machine để quản lý yêu cầu matchmaking của người chơi. Người chơi gửi ticket, được ghép cặp với người chơi khác, sau đó phòng được cấp phát với game server.
 
 ### Sơ Đồ Luồng
 ```
-Người chơi gửi ticket → Ticket OPENED → Matchmaking → Phòng được tạo → Cấp phát server → Phòng FULFILLED
-     ↓                    ↓              ↓            ↓              ↓              ↓
-  Trả về Ticket ID    Chờ hàng đợi   Tìm ghép cặp   Phòng OPENED   Poll trạng thái   Sẵn sàng chơi
-                      (polling)       (2 người chơi)  (UUID gen)     (timeout)        (heartbeat)
+Người chơi gửi ticket → Ticket OPENED → Matchmaking → Phòng OPENED → Allocate Nomad (double-check) → ACTIVED | DEAD → FULFILLED
+     ↓                    ↓              ↓              ↓                    ↓             ↓             ↓
+  Trả về Ticket ID    Chờ hàng đợi   Tìm ghép cặp   room_id(UUID)     Server ready?   Terminal fail   End cycle
+                                                         (polling)      (Redis/Nomad)   (TTL ~60s)     (TTL ~60s)
 ```
 
 ### Luồng Chi Tiết
@@ -286,12 +304,13 @@ Người chơi gửi ticket → Ticket OPENED → Matchmaking → Phòng đượ
 5. **Tạo** phòng với trạng thái "OPENED"
 6. **Bắt đầu** quá trình cấp phát server bất đồng bộ
 
-#### Giai Đoạn 3: Cấp Phát Server
+#### Giai Đoạn 3: Cấp Phát Server (double-check)
 1. **Agent gửi** Nomad job `game-server-{room_id}`
 2. **Job chạy** với cấp phát cổng động
-3. **Agent poll** trạng thái allocation mỗi 2 giây
-4. **Khi sẵn sàng**: Cập nhật phòng với IP/port server, trạng thái "FULFILLED"
+3. **Double-check** readiness: (1) Allocation RUNNING/healthy, (2) readiness (TCP/HTTP) sau một khoảng ngắn
+4. **Khi sẵn sàng**: Cập nhật phòng với IP/port server, trạng thái "ACTIVED"
 5. **Nếu timeout**: Đánh dấu phòng là "DEAD" với lý do thất bại
+6. **Khi kết thúc vòng chơi**: Server gửi `POST /rooms/:room_id/shutdown` với `Authorization: Bearer <token>` và `reason` để Agent set `FULFILLED` (terminal, TTL)
 
 #### Giai Đoạn 4: Client Polling
 1. **Client poll** `GET /tickets/{ticket_id}` cho đến khi trạng thái "MATCHED"
@@ -310,15 +329,17 @@ Người chơi gửi ticket → Ticket OPENED → Matchmaking → Phòng đượ
 
 #### Polling Trạng Thái Phòng
 - **Tần suất**: Mỗi 2-3 giây
-- **Tiếp tục cho đến khi**: IP và port server có sẵn
-- **Thành công**: Trạng thái phòng "FULFILLED" với thông tin server
-- **Thất bại**: Trạng thái phòng "DEAD" với lý do thất bại
+- **Tiếp tục cho đến khi**: `ACTIVED` (Redis) hoặc có `host_ip+port` (Nomad)
+- **Thành công**: `ACTIVED` với `server_ip/port` hoặc fallback `host_ip/port`
+- **Thất bại**: Trạng thái phòng `DEAD` với `fail_reason`
+ - **Kết thúc**: Trạng thái `FULFILLED` khi server graceful shutdown với `end_reason`, client dừng kết nối đến server
 
 ### Timeout và Giới Hạn
 - **Ticket TTL**: 120 giây (có thể cấu hình)
-- **Allocation timeout**: 2 phút (có thể cấu hình)
+- **Allocation timeout**: 90 giây (có thể cấu hình)
 - **Poll delay**: 2 giây (có thể cấu hình)
-- **Grace period**: 60 giây để dọn dẹp (có thể cấu hình)
+- **Terminal TTL**: `DEAD`/`FULFILLED` lưu 60 giây (có thể cấu hình)
+- **Grace period**: 60 giây để dọn dẹp `OPENED` quá hạn (có thể cấu hình)
 
 ### Xử Lý Lỗi
 - **Lỗi mạng**: Thử lại với exponential backoff
@@ -498,6 +519,202 @@ Cấu hình được tải khi khởi động. Để thay đổi cấu hình:
 
 ---
 
+## PHẦN 4: Tích Hợp Game Server
+
+### Tổng Quan
+Game Server được khởi chạy bởi Agent thông qua Nomad job và cần tích hợp với Agent để thực hiện graceful shutdown.
+
+### Khởi Chạy Game Server
+
+#### Tham Số Dòng Lệnh
+Game Server nhận 3 tham số từ Nomad job:
+```bash
+/usr/local/bin/server <port> <room_id> <bearer_token>
+```
+
+**Các Tham Số:**
+- `port`: Cổng động được cấp phát bởi Nomad
+- `room_id`: Định danh phòng (UUID)
+- `bearer_token`: Token để xác thực với Agent
+
+#### Biến Môi Trường
+```bash
+# URL của Agent để gửi shutdown callback
+# Mặc định: http://127.0.0.1:8080
+AGENT_BASE_URL=http://127.0.0.1:8080
+```
+
+### API Endpoints
+
+#### 1. Heartbeat Endpoint
+**GET** `/heartbeat?player_id=<player_id>`
+
+Ghi nhận heartbeat từ client.
+
+**Tham Số Query:**
+- `player_id`: Định danh người chơi
+
+**Response (200 OK):**
+```json
+{
+  "ok": true
+}
+```
+
+**Response Lỗi:**
+- `400 Bad Request`: `{"error": "player_id is required"}`
+
+#### 2. Players Endpoint
+**GET** `/players`
+
+Lấy danh sách người chơi và trạng thái.
+
+**Response (200 OK):**
+```json
+{
+  "players": [
+    {
+      "player_id": "string",
+      "state": "connected|disconnected",
+      "last_seen_unix": 1642531200
+    }
+  ],
+  "room_id": "uuid-string"
+}
+```
+
+### Graceful Shutdown Flow
+
+#### Điều Kiện Shutdown
+Game Server tự động shutdown trong các trường hợp:
+
+1. **Không có client**: Sau 20 giây không có heartbeat
+2. **Client disconnect**: Client không heartbeat > 10 giây
+3. **Signal nhận**: SIGINT/SIGTERM từ hệ thống
+
+#### Shutdown Callback
+Khi phát hiện điều kiện shutdown, server gửi callback đến Agent:
+
+**POST** `{AGENT_BASE_URL}/rooms/{room_id}/shutdown`
+
+**Headers:**
+```
+Content-Type: application/json
+Authorization: Bearer <bearer_token>
+```
+
+**Request Body:**
+```json
+{
+  "reason": "no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received",
+  "at": 1642531200
+}
+```
+
+**Các Reason:**
+- `no_clients`: Không có client kết nối sau 20s
+- `client_disconnected`: Client disconnect > 10s
+- `afk_timeout`: Client AFK quá lâu (chưa implement)
+- `game_cycle_completed`: Hoàn thành vòng chơi (chưa implement)
+- `signal_received`: Nhận SIGINT/SIGTERM
+
+**Response (200 OK):**
+```json
+{
+  "ok": true,
+  "status": "FULFILLED"
+}
+```
+
+**Response Lỗi:**
+- `401 Unauthorized`: Token không hợp lệ
+- `400 Bad Request`: Room không ở trạng thái ACTIVED
+- `404 Not Found`: Room không tồn tại
+
+#### Synchronous Shutdown
+- Server đợi callback thành công trước khi shutdown
+- Timeout 5 giây cho callback
+- Log chi tiết kết quả callback
+
+### CORS Configuration
+Game Server hỗ trợ CORS cho web client:
+
+```go
+// Headers được hỗ trợ
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: GET,POST,OPTIONS
+Access-Control-Allow-Headers: Content-Type, Origin, Accept, Authorization
+```
+
+### Web UI
+**GET** `/`
+
+Hiển thị giao diện quản lý phòng:
+- Thông tin phòng và cổng
+- Số lượng client connected/disconnected
+- Bảng danh sách người chơi
+- Log hoạt động
+
+### Logging
+Game Server ghi log các sự kiện quan trọng:
+
+```
+startup args: port=31695 room=abc123 token_present=true
+server listening on :31695 room=abc123
+heartbeat from player1
+no players within 20s; shutting down
+sending shutdown callback: http://127.0.0.1:8080/rooms/abc123/shutdown reason=no_clients
+shutdown callback sent successfully: status=200
+game finish
+```
+
+### Xử Lý Lỗi
+
+#### Callback Failures
+- **Network error**: Log lỗi và tiếp tục shutdown
+- **Invalid token**: Log lỗi xác thực
+- **Room not found**: Log lỗi trạng thái phòng
+- **Timeout**: Log timeout và tiếp tục shutdown
+
+#### Client Connection Issues
+- **Heartbeat timeout**: Tự động disconnect client
+- **Invalid player_id**: Trả lỗi 400
+- **Server overload**: Có thể reject heartbeat
+
+### Monitoring & Health Checks
+
+#### Health Check Endpoints
+- **Readiness**: `GET /players` (trả 200 khi server sẵn sàng)
+- **Liveness**: TCP connect đến cổng server
+
+#### Metrics
+- Số lượng client connected
+- Tần suất heartbeat
+- Thời gian uptime
+- Số lần shutdown
+
+### Best Practices
+
+#### Development
+1. **Test locally**: Chạy server với tham số thủ công
+2. **Mock Agent**: Sử dụng mock server cho testing
+3. **Log levels**: Bật debug log cho development
+
+#### Production
+1. **Resource limits**: Cấu hình memory/CPU limits
+2. **Graceful shutdown**: Đảm bảo callback luôn được gửi
+3. **Monitoring**: Giám sát uptime và error rates
+4. **Backup strategy**: Có plan B nếu Agent không available
+
+#### Security
+1. **Token validation**: Đảm bảo bearer token hợp lệ
+2. **Input validation**: Validate tất cả input từ client
+3. **Rate limiting**: Giới hạn tần suất heartbeat
+4. **Network security**: Sử dụng HTTPS cho callback
+
+---
+
 ## Danh Sách Kiểm Tra Tích Hợp
 
 ### Trước Khi Tích Hợp
@@ -527,4 +744,4 @@ Cấu hình được tải khi khởi động. Để thay đổi cấu hình:
 ---
 
 *Cập nhật lần cuối: 2025-01-19*
-*Phiên bản: 1.0*
+*Phiên bản: 1.1*

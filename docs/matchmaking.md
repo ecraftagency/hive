@@ -38,12 +38,18 @@ Tài liệu này mô tả chi tiết thiết kế Matchmaking (MM) với thời 
 - Thất bại/timeout: ghi vào `DEAD_ROOMS:{room_id}` với `fail_reason=alloc_timeout|nomad_error`, room chuyển DEAD.
 - Client sau khi `MATCHED` sẽ poll `/rooms/:room_id` đến khi ACTIVED (nhận server) hoặc DEAD (dừng).
 
-5) Lifecycle sau allocate → FULFILLED
-- Khi server graceful shutdown hoặc hoàn tất 1 game cycle: room chuyển `FULFILLED` và được giữ ở Redis với TTL ngắn để client/ops có thể quan sát hậu trạng thái.
+5) Lifecycle sau allocate → FULFILLED/DEAD(crash)
+- **FULFILLED** (nghiêm ngặt): chỉ khi Agent nhận `POST /rooms/:room_id/shutdown` hợp lệ từ server với `reason` (no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received) và token xác thực. Lưu `graceful_at`, `end_reason`, `fulfilled_at`.
+- **DEAD(crash)**: nếu room đang `ACTIVED` nhưng Nomad job dừng/xoá và không có `graceful_at` → set `DEAD` với `fail_reason=server_crash`, `dead_at`.
+- **Consistency**: Cron job đảm bảo `count(RUNNING game-server jobs) == count(ACTIVED rooms)`. Dừng job nếu room terminal, mark `DEAD` nếu `ACTIVED` không có job.
+- Cả `DEAD` và `FULFILLED` được giữ ở Redis với TTL ngắn để client/ops quan sát hậu trạng thái.
 
-6) Consistency & Cleanup (một chiều về client)
-- So sánh `ACTIVED_ROOMS` với danh sách Nomad jobs RUNNING prefix `game-server-*`.
-- Nếu job không RUNNING nhưng room còn `ACTIVED`: tùy tín hiệu từ server/agent, chuyển `FULFILLED` (graceful/end-cycle) hoặc `DEAD` (fail) rồi áp TTL.
+6) Consistency & Cleanup (nguyên tắc tối thượng)
+- **Nguyên tắc**: `count(RUNNING game-server jobs) == count(ACTIVED rooms)`
+- **Dừng job terminal**: Room `DEAD`/`FULFILLED` → dừng job tương ứng ngay
+- **Crash detection**: `ACTIVED` room không có running job → `DEAD(server_crash)`
+- **Stray job cleanup**: Job chạy không có room `ACTIVED` tương ứng → dừng (chỉ game-server jobs)
+- **Timeout handling**: `OPENED` room timeout → `DEAD(alloc_timeout)`
 - `FULFILLED` và `DEAD` là terminal và chỉ duy trì tạm thời (TTL), không tham gia consistency với RUNNING jobs.
 
 ## TTL & Timeout
@@ -58,9 +64,9 @@ Tài liệu này mô tả chi tiết thiết kế Matchmaking (MM) với thời 
   - `mm:tickets:opened` (LIST/ZSET FIFO), `mm:players:pending` (SET chống trùng player)
 - Room
   - `mm:room:opened:<room_id>` → `{room_id, players:[A,B], created_at, status:OPENED}` (EXPIRE allocate_ttl_seconds)
-  - `mm:room:actived:<room_id>` → `{room_id, players, server:{ip,port,allocation_id}, created_at, activated_at, status:ACTIVED}`
-  - `mm:room:dead:<room_id>` → `{room_id, players, fail_reason, created_at, dead_at, status:DEAD}` (EXPIRE dead_fulfilled_ttl)
-  - `mm:room:fulfilled:<room_id>` → `{room_id, players, result?, created_at, fulfilled_at, status:FULFILLED}` (EXPIRE dead_fulfilled_ttl)
+  - `mm:room:actived:<room_id>` → `{room_id, players, server:{ip,port,allocation_id}, created_at, activated_at, status:ACTIVED, shutdown_token?}`
+  - `mm:room:dead:<room_id>` → `{room_id, players, fail_reason, created_at, dead_at, status:DEAD}` (EXPIRE dead_fulfilled_ttl) với `fail_reason=alloc_timeout|nomad_error|server_crash`
+  - `mm:room:fulfilled:<room_id>` → `{room_id, players, result?, end_reason, created_at, fulfilled_at, graceful_at, status:FULFILLED}` (EXPIRE dead_fulfilled_ttl)
   - Index: `mm:rooms:opened`, `mm:rooms:actived`, `mm:rooms:dead`, `mm:rooms:fulfilled`
   - Metadata khuyến nghị: `version` (CAS), `state_rank`, `attempt_count`, `nomad_job_id`, `alloc_id`, `node`
 
@@ -69,6 +75,7 @@ Tài liệu này mô tả chi tiết thiết kế Matchmaking (MM) với thời 
 - `GET /tickets/:ticket_id` → `{ status: OPENED|MATCHED|EXPIRED|REJECTED, room_id? }`
 - `POST /tickets/:ticket_id/cancel` → `{ status: CANCELED }` (chỉ khi ticket OPENED)
 - `GET /rooms/:room_id` → `{ status: OPENED|ACTIVED|DEAD|FULFILLED, server?, fail_reason?, players }` (luôn 200; không trả 404 trong TTL terminal)
+ - `POST /rooms/:room_id/shutdown` (server→agent) → header `Authorization: Bearer <token>`, body `{ reason: no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received, at? }` (validate token và room status)
 
 ## Sơ đồ tuần tự (cập nhật)
 ### Submit & Match
@@ -112,5 +119,6 @@ sequenceDiagram
 - Double-check allocate: (1) Nomad alloc RUNNING/healthy, (2) readiness probe của room service sau một khoảng ngắn.
 - `DEAD` và `FULFILLED` lưu với TTL ngắn để client nhận trạng thái cuối thay vì `ROOM_NOT_FOUND` và hỗ trợ debug.
 - Idempotency & Locking: ràng buộc 1 job/room, dùng lock phân tán khi allocate; cập nhật state qua CAS/version + `state_rank`.
+- FULFILLED chỉ set khi có tín hiệu graceful hợp lệ; nếu job dừng không có graceful → `DEAD(server_crash)`.
 - Vẫn giữ Cancel Ticket (Priority 1) cho ticket OPENED.
 - Chưa implement — tài liệu là nguồn tham chiếu để triển khai sau khi đồng thuận.

@@ -11,6 +11,12 @@ type CancelTicketRequest struct {
 	// Empty body for now, could add reason later
 }
 
+// Shutdown từ server → agent
+type ShutdownRequest struct {
+	Reason string `json:"reason" binding:"required"` // no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received
+	At     int64  `json:"at"`                        // optional unix ts; default now
+}
+
 // Response DTOs
 type SubmitTicketResponse struct {
 	TicketID string `json:"ticket_id"`
@@ -29,6 +35,7 @@ type CancelTicketResponse struct {
 type AdminOverviewResponse struct {
 	OpenTickets    []store.Ticket    `json:"open_tickets"`
 	OpenedRooms    []store.RoomState `json:"opened_rooms"`
+	ActivedRooms   []store.RoomState `json:"actived_rooms"`
 	FulfilledRooms []store.RoomState `json:"fulfilled_rooms"`
 	DeadRooms      []store.RoomState `json:"dead_rooms"`
 }
@@ -91,6 +98,9 @@ const (
 
 	// Gateway errors (502)
 	ErrCodeGatewayError = "GATEWAY_ERROR"
+
+	// Authentication errors (401)
+	ErrCodeUnauthorized = "UNAUTHORIZED"
 
 	// Additional error codes
 	ErrCodeNoRunningAllocation = "NO_RUNNING_ALLOCATION"

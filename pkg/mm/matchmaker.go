@@ -2,6 +2,8 @@ package mm
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"time"
 
 	"hive/pkg/store"
@@ -11,12 +13,14 @@ import (
 )
 
 type Manager struct {
-	store *store.Manager
-	svr   *svrmgr.Manager
+	store        *store.Manager
+	svr          *svrmgr.Manager
+	allocTimeout time.Duration
+	pollInterval time.Duration
 }
 
 func New(storeMgr *store.Manager, svrMgr *svrmgr.Manager) *Manager {
-	return &Manager{store: storeMgr, svr: svrMgr}
+	return &Manager{store: storeMgr, svr: svrMgr, allocTimeout: 2 * time.Minute, pollInterval: 2 * time.Second}
 }
 
 // SubmitJoinTicket: tạo ticket OPENED cho player
@@ -46,24 +50,25 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 	_ = m.store.MarkMatched(ctx, t1.TicketID, roomID)
 	_ = m.store.MarkMatched(ctx, t2.TicketID, roomID)
 	// save OPENED room
-	_ = m.store.SaveRoomState(ctx, store.RoomState{RoomID: roomID, Players: players, CreatedAt: time.Now().Unix(), Status: "OPENED"})
+	createdAt := time.Now().Unix()
+	_ = m.store.SaveRoomState(ctx, store.RoomState{RoomID: roomID, Players: players, CreatedAt: createdAt, Status: "OPENED"})
 	// allocate async
 	go func(rid string, plist []string, created int64) {
-		// allocation timeout handled by cron (per doc); here just attempt allocate
+		// allocate job
 		if err := m.svr.RunGameServer(rid); err != nil {
 			_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: err.Error()})
 			return
 		}
-		// poll room info until allocated and server is running
-		deadline := time.Now().Add(2 * time.Minute) // TODO: use config allocation timeout
+		// double-check allocation readiness within allocTimeout
+		deadline := time.Now().Add(m.allocTimeout)
 		for time.Now().Before(deadline) {
 			info, e := m.svr.GetRoomInfo(rid)
 			if e == nil && info != nil && info.HostIP != "" && len(info.Ports) > 0 {
+				// choose port
 				port := 0
 				if v, ok := info.Ports["http"]; ok && v > 0 {
 					port = v
 				} else {
-					// find first valid port
 					for _, vv := range info.Ports {
 						if vv > 0 {
 							port = vv
@@ -71,24 +76,43 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 						}
 					}
 				}
-				// ensure we have valid IP and port before marking FULFILLED
-				if port > 0 && info.HostIP != "" {
-					_ = m.store.SaveRoomState(context.Background(), store.RoomState{
-						RoomID:       rid,
-						AllocationID: info.AllocationID,
-						ServerIP:     info.HostIP,
-						Port:         port,
-						Players:      plist,
-						CreatedAt:    created,
-						Status:       "FULFILLED",
-					})
-					return
+				if port > 0 {
+					if probeReady(info.HostIP, port) {
+						_ = m.store.SaveRoomState(context.Background(), store.RoomState{
+							RoomID:       rid,
+							AllocationID: info.AllocationID,
+							ServerIP:     info.HostIP,
+							Port:         port,
+							Players:      plist,
+							CreatedAt:    created,
+							Status:       "ACTIVED",
+						})
+						return
+					}
 				}
 			}
-			time.Sleep(2 * time.Second) // TODO: use config poll delay
+			time.Sleep(m.pollInterval)
 		}
-		// leave OPENED for cron to timeout -> DEAD
-	}(roomID, players, time.Now().Unix())
+		// timeout → DEAD
+		_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: "alloc_timeout"})
+	}(roomID, players, createdAt)
 
-	return &store.RoomState{RoomID: roomID, Players: players, CreatedAt: time.Now().Unix(), Status: "OPENED"}, nil
+	return &store.RoomState{RoomID: roomID, Players: players, CreatedAt: createdAt, Status: "OPENED"}, nil
+}
+
+// probeReady: double-check readiness with two fast TCP dials
+func probeReady(host string, port int) bool {
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	c1, e1 := net.DialTimeout("tcp", addr, 2*time.Second)
+	if e1 != nil {
+		return false
+	}
+	_ = c1.Close()
+	time.Sleep(500 * time.Millisecond)
+	c2, e2 := net.DialTimeout("tcp", addr, 2*time.Second)
+	if e2 != nil {
+		return false
+	}
+	_ = c2.Close()
+	return true
 }

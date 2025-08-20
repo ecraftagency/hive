@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"hive/pkg/ui"
+
+	"bytes"
 
 	"github.com/gin-gonic/gin"
 )
@@ -82,11 +85,19 @@ func main() {
 	if len(os.Args) >= 3 {
 		roomID = os.Args[2]
 	}
+	bearer := ""
+	if len(os.Args) >= 4 {
+		bearer = os.Args[3]
+	}
+	agentBase := os.Getenv("AGENT_BASE_URL")
+	if agentBase == "" {
+		agentBase = "http://127.0.0.1:8080"
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	ginLog("startup args: port=%s room=%s", port, roomID)
+	ginLog("startup args: port=%s room=%s bearer=%s agent=%s", port, roomID, bearer, agentBase)
 
 	// CORS middleware (simple, no dependency)
 	r.Use(func(c *gin.Context) {
@@ -135,6 +146,34 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"players": list, "room_id": roomID})
 	})
 
+	// shutdown callback helper - synchronous để đảm bảo hoàn thành
+	sendShutdown := func(reason string) error {
+		if roomID == "" || bearer == "" || agentBase == "" {
+			ginLog("shutdown callback skipped: roomID=%s bearer=%s agentBase=%s", roomID, bearer, agentBase)
+			return fmt.Errorf("missing required parameters")
+		}
+		payload := map[string]interface{}{"reason": reason, "at": time.Now().Unix()}
+		b, _ := json.Marshal(payload)
+		url := fmt.Sprintf("%s/rooms/%s/shutdown", agentBase, roomID)
+		client := &http.Client{Timeout: 5 * time.Second}
+		req, _ := http.NewRequest(http.MethodPost, url, bytesReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		ginLog("sending shutdown callback: %s reason=%s", url, reason)
+		resp, err := client.Do(req)
+		if err != nil {
+			ginLog("shutdown callback failed: %v", err)
+			return err
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			ginLog("shutdown callback failed with status: %d", resp.StatusCode)
+			return fmt.Errorf("agent returned status %d", resp.StatusCode)
+		}
+		ginLog("shutdown callback sent successfully: status=%d", resp.StatusCode)
+		return nil
+	}
+
 	srv := &http.Server{Addr: ":" + port, Handler: r}
 	go func() {
 		ginLog("server listening on :%s room=%s", port, roomID)
@@ -150,6 +189,9 @@ func main() {
 		time.Sleep(initialGrace)
 		if players.size() == 0 {
 			ginLog("no players within %s; shutting down", initialGrace)
+			if err := sendShutdown("no_clients"); err != nil {
+				ginLog("failed to send shutdown callback: %v", err)
+			}
 			shutdownCh <- struct{}{}
 			return
 		}
@@ -158,6 +200,9 @@ func main() {
 		for range ticker.C {
 			if bad, pid := players.anyDisconnected(time.Now(), heartbeatTTL); bad {
 				ginLog("player %s disconnected; shutting down", pid)
+				if err := sendShutdown("client_disconnected"); err != nil {
+					ginLog("failed to send shutdown callback: %v", err)
+				}
 				shutdownCh <- struct{}{}
 				return
 			}
@@ -169,10 +214,16 @@ func main() {
 	select {
 	case <-shutdownCh:
 	case s := <-sigCh:
-		ginLog("received %s; shutting down", s.String())
+		ginLog("received %s; sending graceful shutdown", s.String())
+		if err := sendShutdown("signal_received"); err != nil {
+			ginLog("failed to send shutdown callback: %v", err)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
 	ginLog("game finish")
 }
+
+// bytesReader wraps a byte slice into an io.ReadCloser-like Reader for request bodies
+func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }

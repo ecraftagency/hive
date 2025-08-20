@@ -64,9 +64,9 @@ namespace CsClient
 				row.Status = "OPENED";
 				row.AddPlayer(playerId);
 
-				var (ip, port) = await PollRoomUntilFulfilled(roomId, row);
+				var (ip, port) = await PollRoomUntilReady(roomId, row);
 				row.ServerUrl = $"http://{ip}:{port}";
-				row.Status = "FULFILLED";
+				row.Status = "ACTIVED";
 
 				// Heartbeat for 60s, then stop and remove room from table
 				await HeartbeatWindow(row.ServerUrl, playerId, HEARTBEAT_TOTAL_SECONDS, row);
@@ -133,7 +133,7 @@ namespace CsClient
 			throw new Exception("ticket timeout");
 		}
 
-		private static async Task<(string ip, int port)> PollRoomUntilFulfilled(string roomId, RoomRow row)
+		private static async Task<(string ip, int port)> PollRoomUntilReady(string roomId, RoomRow row)
 		{
 			int loops = ROOM_MAX_WAIT_SECONDS / ROOM_POLL_DELAY_SECONDS;
 			for (int i = 0; i < loops; i++)
@@ -146,8 +146,17 @@ namespace CsClient
 				var room = SafeDeserialize<RoomState>(raw); if (room == null) { await Task.Delay(TimeSpan.FromSeconds(ROOM_POLL_DELAY_SECONDS)); continue; }
 				row.Status = room.Status ?? row.Status;
 				row.Players = room.Players != null ? string.Join("|", room.Players) : row.Players;
-				var ep = ExtractEndpoint(room);
+				// terminal
 				if (!string.IsNullOrEmpty(room.Status) && room.Status.Equals("DEAD", StringComparison.OrdinalIgnoreCase)) throw new Exception("room DEAD");
+				if (!string.IsNullOrEmpty(room.Status) && room.Status.Equals("FULFILLED", StringComparison.OrdinalIgnoreCase)) throw new Exception("room FULFILLED");
+				// ready via ACTIVED
+				if (!string.IsNullOrEmpty(room.Status) && room.Status.Equals("ACTIVED", StringComparison.OrdinalIgnoreCase))
+				{
+					var epA = ExtractEndpoint(room);
+					if (!string.IsNullOrEmpty(epA.ip) && epA.port > 0) return epA;
+				}
+				// fallback via Nomad
+				var ep = ExtractEndpoint(room);
 				if (!string.IsNullOrEmpty(ep.ip) && ep.port > 0) return ep;
 				await Task.Delay(TimeSpan.FromSeconds(ROOM_POLL_DELAY_SECONDS));
 			}

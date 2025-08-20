@@ -8,20 +8,24 @@ using System.Threading.Tasks;
 
 /*
 ================================================================================
-Integration Flow (Agent v1) – Hướng dẫn tích hợp C#
+Integration Flow (Agent) – Hướng dẫn tích hợp C# (cập nhật)
 ================================================================================
-Mục tiêu: Mẫu code tối giản, có thể copy/paste để tích hợp Web/Game client với Agent v1.
+Mục tiêu: Mẫu code tối giản, có thể copy/paste để tích hợp Web/Game client với Agent.
 
 Luồng tổng quát:
 1) Gọi POST /tickets với player_id (random name + 3 số)
 2) Poll GET /tickets/:ticket_id mỗi 5s đến khi status=MATCHED → nhận room_id
-3) Poll GET /rooms/:room_id mỗi 3s đến khi status=FULFILLED (hoặc có host_ip+port) → nhận endpoint http://IP:PORT
+3) Poll GET /rooms/:room_id mỗi 3s đến khi status=ACTIVED (hoặc có host_ip+port từ Nomad) → nhận endpoint http://IP:PORT
 4) Gửi heartbeat trực tiếp đến http://IP:PORT/heartbeat?player_id=...
 
 Lưu ý quan trọng:
 - Poll ticket tối đa 150s (>= TTL 120s), ticket có thể EXPIRED → dừng sớm.
-- Poll room tối đa 180s, nếu DEAD → dừng và báo lỗi; nếu có host_ip+port (Nomad) coi như fulfilled.
-- Heartbeat không qua proxy của agent trong integrate flow (gửi trực tiếp tới server).
+- Poll room tối đa 180s:
+  + Nếu ACTIVED: dùng server_ip/port để kết nối.
+  + Nếu có host_ip+port (Nomad) trước khi ACTIVED: vẫn có thể dùng thử endpoint để kết nối (fallback).
+  + Nếu DEAD: dừng và báo lỗi với fail reason (server có thể trả kèm trong JSON).
+  + Nếu FULFILLED: coi như kết thúc chu kỳ/đã shutdown, dừng poll (không có endpoint để kết nối).
+- Heartbeat không qua proxy của agent (gửi trực tiếp tới server).
 - Bật JSON PropertyNameCaseInsensitive để khớp casing linh hoạt.
 - Log lỗi HTTP (status code + body) để dễ điều tra.
 ================================================================================
@@ -60,14 +64,14 @@ namespace CsClient
 			var roomId2 = await PollTicketUntilMatched(http, ticket2);
 			Console.WriteLine($"🎯 Matched: room1={roomId1}, room2={roomId2}\n");
 
-			// 3) Poll room → FULFILLED (hoặc có host_ip+port)
-			var ep1Task = PollRoomUntilFulfilled(http, roomId1);
-			var ep2Task = PollRoomUntilFulfilled(http, roomId2);
+			// 3) Poll room → ACTIVED (hoặc có host_ip+port)
+			var ep1Task = PollRoomUntilReady(http, roomId1);
+			var ep2Task = PollRoomUntilReady(http, roomId2);
 			var ep1 = await ep1Task; var ep2 = await ep2Task;
 			var url1 = $"http://{ep1.ip}:{ep1.port}";
 			var url2 = $"http://{ep2.ip}:{ep2.port}";
-			Console.WriteLine($"🏠 Room1 fulfilled endpoint: {ep1.ip}:{ep1.port} → {url1}");
-			Console.WriteLine($"🏠 Room2 fulfilled endpoint: {ep2.ip}:{ep2.port} → {url2}\n");
+			Console.WriteLine($"🏠 Room1 ready endpoint: {ep1.ip}:{ep1.port} → {url1}");
+			Console.WriteLine($"🏠 Room2 ready endpoint: {ep2.ip}:{ep2.port} → {url2}\n");
 
 			// 4) Heartbeat trực tiếp tới server (vô hạn)
 			await Task.WhenAll(
@@ -122,10 +126,10 @@ namespace CsClient
 			throw new Exception("poll ticket timeout");
 		}
 
-		// Poll GET /rooms/:room_id → FULFILLED (hoặc có host_ip+port) => trả endpoint http://IP:PORT; DEAD => lỗi; timeout 180s
-		private static async Task<(string ip, int port)> PollRoomUntilFulfilled(HttpClient http, string roomId)
+		// Poll GET /rooms/:room_id → ACTIVED (hoặc có host_ip+port) => trả endpoint http://IP:PORT; DEAD/FULFILLED => dừng; timeout 180s
+		private static async Task<(string ip, int port)> PollRoomUntilReady(HttpClient http, string roomId)
 		{
-			Console.WriteLine($"🔎 Polling room {roomId} until FULFILLED...");
+			Console.WriteLine($"🔎 Polling room {roomId} until ACTIVED...");
 			int loops = ROOM_MAX_WAIT_SECONDS / ROOM_POLL_DELAY_SECONDS;
 			for (int i = 0; i < loops; i++)
 			{
@@ -136,12 +140,18 @@ namespace CsClient
 				if (!resp.IsSuccessStatusCode) { Console.WriteLine($"   room HTTP {(int)resp.StatusCode}: {raw}"); await Task.Delay(TimeSpan.FromSeconds(ROOM_POLL_DELAY_SECONDS)); continue; }
 				var room = SafeDeserialize<RoomState>(raw); if (room == null) { Console.WriteLine("   room decode failed"); await Task.Delay(TimeSpan.FromSeconds(ROOM_POLL_DELAY_SECONDS)); continue; }
 				var status = room.Status ?? string.Empty;
-				if (!string.IsNullOrEmpty(status))
+				// Terminal
+				if (status.Equals("DEAD", StringComparison.OrdinalIgnoreCase)) throw new Exception("room DEAD (allocation failed)");
+				if (status.Equals("FULFILLED", StringComparison.OrdinalIgnoreCase)) throw new Exception("room FULFILLED (terminal)");
+				// Ready via Redis ACTIVED
+				if (status.Equals("ACTIVED", StringComparison.OrdinalIgnoreCase))
 				{
-					if (status.Equals("DEAD", StringComparison.OrdinalIgnoreCase)) throw new Exception("room DEAD (allocation failed)");
-					if (status.Equals("FULFILLED", StringComparison.OrdinalIgnoreCase)) { var ep = ExtractEndpoint(room); if (!string.IsNullOrEmpty(ep.ip) && ep.port > 0) return ep; }
+					var epA = ExtractEndpoint(room);
+					if (!string.IsNullOrEmpty(epA.ip) && epA.port > 0) return epA;
 				}
-				else { var ep = ExtractEndpoint(room); if (!string.IsNullOrEmpty(ep.ip) && ep.port > 0) return ep; }
+				// Fallback via Nomad host_ip/ports
+				var ep = ExtractEndpoint(room);
+				if (!string.IsNullOrEmpty(ep.ip) && ep.port > 0) return ep;
 				await Task.Delay(TimeSpan.FromSeconds(ROOM_POLL_DELAY_SECONDS));
 			}
 			throw new Exception("poll room timeout");

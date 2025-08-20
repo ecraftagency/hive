@@ -19,6 +19,10 @@ type RoomState struct {
 	CreatedAt    int64    `json:"created_at_unix"`
 	Status       string   `json:"status,omitempty"`
 	FailReason   string   `json:"fail_reason,omitempty"`
+	EndReason    string   `json:"end_reason,omitempty"`
+	FulfilledAt  int64    `json:"fulfilled_at_unix,omitempty"`
+	DeadAt       int64    `json:"dead_at_unix,omitempty"`
+	GracefulAt   int64    `json:"graceful_at_unix,omitempty"`
 }
 
 type PendingCreate struct {
@@ -58,10 +62,22 @@ const (
 // ticketTTL will be set from config, default 120s
 var ticketTTL = 120 * time.Second
 
+// allocationTimeout controls how long an OPENED room can live before being considered DEAD
+var allocationTimeout = 90 * time.Second
+
+// terminalTTL controls how long to retain terminal rooms (DEAD, FULFILLED)
+var terminalTTL = 60 * time.Second
+
 // SetTicketTTL sets the ticket TTL from config
 func SetTicketTTL(ttl time.Duration) {
 	ticketTTL = ttl
 }
+
+// SetAllocationTimeout sets how long an OPENED room is kept before timing out
+func SetAllocationTimeout(ttl time.Duration) { allocationTimeout = ttl }
+
+// SetTerminalTTL sets how long terminal room states are kept
+func SetTerminalTTL(ttl time.Duration) { terminalTTL = ttl }
 
 // CreateTicket (join): returns ticket
 func (m *Manager) CreateTicket(ctx context.Context, playerID string) (*Ticket, error) {
@@ -162,7 +178,17 @@ func roomsIndexKey() string        { return "mm:rooms" }
 func (m *Manager) SaveRoomState(ctx context.Context, st RoomState) error {
 	b, _ := json.Marshal(st)
 	pipe := m.redis.TxPipeline()
-	pipe.Set(ctx, roomKey(st.RoomID), string(b), 0)
+	// TTL theo trạng thái
+	var exp time.Duration
+	switch st.Status {
+	case "OPENED":
+		exp = allocationTimeout
+	case "DEAD", "FULFILLED":
+		exp = terminalTTL
+	default: // ACTIVED hoặc không xác định
+		exp = 0
+	}
+	pipe.Set(ctx, roomKey(st.RoomID), string(b), exp)
 	pipe.SAdd(ctx, roomsIndexKey(), st.RoomID)
 	_, err := pipe.Exec(ctx)
 	return err

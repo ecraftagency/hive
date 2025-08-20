@@ -13,12 +13,16 @@ import (
 type Manager struct {
 	client      *api.Client
 	datacenters []string
+	bearerToken string
 }
 
 // SetDatacenters sets the datacenters for Nomad jobs
 func (m *Manager) SetDatacenters(datacenters []string) {
 	m.datacenters = datacenters
 }
+
+// SetBearerToken sets bearer token to inject to server args
+func (m *Manager) SetBearerToken(token string) { m.bearerToken = token }
 
 // IP mapping config - should be loaded from config
 type IPMapping struct {
@@ -108,16 +112,20 @@ func (m *Manager) RunGameServer(roomID string) error {
 	jobName := fmt.Sprintf("game-server-%s", roomID)
 	jobType := "batch"
 	count := 1
-	tgName := "game-server"
+	gName := "game-server"
 	taskName := "server"
 	driver := "raw_exec"
 
 	// Task group & task
-	tg := api.NewTaskGroup(tgName, count)
+	tg := api.NewTaskGroup(gName, count)
 	task := api.NewTask(taskName, driver)
 	task.SetConfig("command", "/usr/local/bin/server")
-	// args: 1) dynamic port 2) roomID
-	task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID})
+	// args: 1) dynamic port 2) roomID 3) bearer token
+	bearer := m.bearerToken
+	if bearer == "" {
+		bearer = "1234abcd"
+	}
+	task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID, bearer})
 
 	// Log rotation config
 	maxFiles := 5
@@ -186,7 +194,11 @@ func (m *Manager) RunGameServerV2(roomID string, cpu int, memoryMB int, command 
 	if len(args) > 0 {
 		task.SetConfig("args", args)
 	} else {
-		task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID})
+		bearer := m.bearerToken
+		if bearer == "" {
+			bearer = "1234abcd"
+		}
+		task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID, bearer})
 	}
 
 	// Log rotation config

@@ -8,7 +8,11 @@
 - Nút & Flow:
   - Join → submit ticket: `POST /tickets { player_id }`
   - Poll ticket: `GET /tickets/:ticket_id` → khi `MATCHED` nhận `room_id`
-  - Poll room: `GET /rooms/:room_id` → đến khi `FULFILLED` (nhận server) hoặc `DEAD` (fail_reason), dừng
+  - Poll room: `GET /rooms/:room_id` → đến khi `ACTIVED` (ưu tiên `server_ip/port` từ Redis) hoặc fallback `host_ip/port` (Nomad). Nếu `DEAD` hoặc `FULFILLED` thì dừng.
   - Cancel: `POST /tickets/:ticket_id/cancel` khi ticket còn `OPENED`
 - Heartbeat: gọi trực tiếp `http://<server_ip>:<port>/heartbeat?player_id=...` (CORS bật trên server) mỗi 3s; log ok/failed
 - UI: Dark theme, hiển thị URL server dạng link; có thể thêm backoff polling (khuyến nghị)
+
+### Lưu ý về terminal state
+- `DEAD`: có `fail_reason=alloc_timeout|server_crash`, dừng flow và hiển thị nguyên nhân.
+- `FULFILLED`: server gửi graceful shutdown với `end_reason=no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received`, client dừng poll và kết thúc phiên.

@@ -1,0 +1,5 @@
+bin
+test/cs_client/bin
+test/cs_client/obj
+test/cs_server/bin
+test/cs_server/obj

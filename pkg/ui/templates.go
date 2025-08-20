@@ -37,12 +37,16 @@ const AgentUIHTML = `<!doctype html>
         <table id="tblOpened"><thead><tr><th>Room</th><th>Players</th><th>Created At</th><th>Status</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="card">
+        <h3>Actived Rooms</h3>
+        <table id="tblActived"><thead><tr><th>Room</th><th>Players</th><th>Server</th><th>Alloc</th><th>Created At</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
         <h3>Fulfilled Rooms</h3>
-        <table id="tblFulfilled"><thead><tr><th>Room</th><th>Players</th><th>Server</th><th>Alloc</th><th>Created At</th></tr></thead><tbody></tbody></table>
+        <table id="tblFulfilled"><thead><tr><th>Room</th><th>Players</th><th>Server</th><th>End Reason</th><th>Graceful At</th><th>Created At</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="card">
         <h3>Dead Rooms</h3>
-        <table id="tblDead"><thead><tr><th>Room</th><th>Players</th><th>Reason</th><th>Created At</th></tr></thead><tbody></tbody></table>
+        <table id="tblDead"><thead><tr><th>Room</th><th>Players</th><th>Fail Reason</th><th>Dead At</th><th>Created At</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
   </div>
@@ -75,8 +79,8 @@ const AgentUIHTML = `<!doctype html>
       tb.appendChild(tr);
     });
   }
-  function renderFulfilled(items){
-    const tb = document.querySelector('#tblFulfilled tbody'); tb.innerHTML='';
+  function renderActived(items){
+    const tb = document.querySelector('#tblActived tbody'); if(!tb) return; tb.innerHTML='';
     (items||[]).forEach(it=>{
       const players = (it.players||[]).join(', ');
       const server = (it.server_ip&&it.port)? (it.server_ip+':'+it.port) : '';
@@ -89,6 +93,21 @@ const AgentUIHTML = `<!doctype html>
       tb.appendChild(tr);
     });
   }
+  function renderFulfilled(items){
+    const tb = document.querySelector('#tblFulfilled tbody'); tb.innerHTML='';
+    (items||[]).forEach(it=>{
+      const players = (it.players||[]).join(', ');
+      const server = (it.server_ip&&it.port)? (it.server_ip+':'+it.port) : '';
+      const tr=document.createElement('tr');
+      tr.innerHTML = '<td class="mono">'+(it.room_id||'')+'</td>'+
+                     '<td>'+players+'</td>'+
+                     '<td>'+server+'</td>'+
+                     '<td>'+(it.end_reason||'')+'</td>'+
+                     '<td>'+ts2(it.graceful_at_unix||it.graceful_at||0)+'</td>'+
+                     '<td>'+ts2(it.created_at_unix||it.created_at||0)+'</td>';
+      tb.appendChild(tr);
+    });
+  }
   function renderDead(items){
     const tb = document.querySelector('#tblDead tbody'); tb.innerHTML='';
     (items||[]).forEach(it=>{
@@ -97,6 +116,7 @@ const AgentUIHTML = `<!doctype html>
       tr.innerHTML = '<td class="mono">'+(it.room_id||'')+'</td>'+
                      '<td>'+players+'</td>'+
                      '<td>'+(it.fail_reason||'')+'</td>'+
+                     '<td>'+ts2(it.dead_at_unix||it.dead_at||0)+'</td>'+
                      '<td>'+ts2(it.created_at_unix||it.created_at||0)+'</td>';
       tb.appendChild(tr);
     });
@@ -109,6 +129,7 @@ const AgentUIHTML = `<!doctype html>
       const data = await res.json();
       renderTickets(data.open_tickets||[]);
       renderOpened(data.opened_rooms||[]);
+      renderActived(data.actived_rooms||[]);
       renderFulfilled(data.fulfilled_rooms||[]);
       renderDead(data.dead_rooms||[]);
       statusEl.textContent = 'Last update: '+new Date().toLocaleTimeString();
@@ -239,8 +260,8 @@ const WebClientHTML = `<!doctype html>
 
   async function pollRoom(roomId, playerId){ log('Polling room info for '+roomId+' ...'); const deadline = Date.now()+120000; while(Date.now()<deadline){ try{ const info = await apiGet(AGENT+'/rooms/'+encodeURIComponent(roomId)); log('Room info: '+JSON.stringify(info)); 
     
-    // Case 1: RoomState from Redis - start heartbeat immediately when FULFILLED
-    if(info && info.status==='FULFILLED'){
+    // Case 1: RoomState from Redis - start heartbeat when ACTIVED
+    if(info && info.status==='ACTIVED'){
       if(info.server_ip && (info.port > 0 || parseInt(info.port) > 0)){
         const url = 'http://'+info.server_ip+':'+info.port+'/';
         serverEl.textContent = url;
@@ -249,7 +270,7 @@ const WebClientHTML = `<!doctype html>
         startHeartbeat(info.server_ip, info.port, playerId);
         return;
       } else {
-        log('FULFILLED but no server info yet, keep polling...');
+        log('ACTIVED but no server info yet, keep polling...');
       }
     }
     
@@ -267,6 +288,7 @@ const WebClientHTML = `<!doctype html>
     }
     
     if(info && info.status==='DEAD'){ log('Room DEAD: '+(info.fail_reason||'')); return }
+    if(info && info.status==='FULFILLED'){ log('Room FULFILLED (terminal)'); return }
     
   }catch(e){ log('pollRoom error: '+e.message); } await new Promise(r=>setTimeout(r,2000)); } log('Server info not ready yet'); }
 
