@@ -107,6 +107,28 @@ func (m *Manager) CountRunningJobsByNamePrefix(prefix string) (int, error) {
 	return count, nil
 }
 
+// PlanJob thực hiện plan một job để kiểm tra khả năng đặt trước khi register
+func (m *Manager) PlanJob(job *api.Job) (bool, string, error) {
+	resp, _, err := m.client.Jobs().Plan(job, true, nil)
+	if err != nil {
+		return false, "plan_error", err
+	}
+	// Nếu có FailedTGAllocs hoặc không có node nào phù hợp
+	if resp == nil {
+		return false, "plan_no_response", nil
+	}
+	if len(resp.FailedTGAllocs) > 0 {
+		return false, "insufficient_resources", nil
+	}
+	return true, "", nil
+}
+
+// DeregisterJob xoá job khỏi Nomad (purge=true xoá cả eval/alloc)
+func (m *Manager) DeregisterJob(roomID string, purge bool) error {
+	_, _, err := m.client.Jobs().Deregister(roomID, purge, nil)
+	return err
+}
+
 // RunGameServer tạo và đăng ký một batch job cho game server với dynamic port
 func (m *Manager) RunGameServer(roomID string) error {
 	jobName := fmt.Sprintf("game-server-%s", roomID)
@@ -172,7 +194,16 @@ func (m *Manager) RunGameServer(roomID string) error {
 		TaskGroups:  []*api.TaskGroup{tg},
 	}
 
-	_, _, err := m.client.Jobs().Register(job, nil)
+	// Plan trước khi register
+	ok, reason, err := m.PlanJob(job)
+	if err != nil {
+		return fmt.Errorf("nomad plan error: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("nomad plan rejected: %s", reason)
+	}
+
+	_, _, err = m.client.Jobs().Register(job, nil)
 	return err
 }
 
@@ -246,7 +277,16 @@ func (m *Manager) RunGameServerV2(roomID string, cpu int, memoryMB int, command 
 		Meta:        map[string]string{"created_at": time.Now().UTC().Format(time.RFC3339)},
 	}
 
-	_, _, err := m.client.Jobs().Register(job, nil)
+	// Plan trước khi register
+	ok, reason, err := m.PlanJob(job)
+	if err != nil {
+		return fmt.Errorf("nomad plan error: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("nomad plan rejected: %s", reason)
+	}
+
+	_, _, err = m.client.Jobs().Register(job, nil)
 	return err
 }
 

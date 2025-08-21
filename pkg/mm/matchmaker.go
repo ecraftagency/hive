@@ -58,6 +58,7 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 		command := "/usr/local/bin/boardserver/server.x86_64"
 		args := []string{"-port", "${NOMAD_PORT_http}", "-serverId", rid, "-token", "1234abcd", "-nographics", "-batchmode"}
 		if err := m.svr.RunGameServerV2(rid, 400, 400, command, args); err != nil {
+			// Plan có thể fail ở đây → DEAD ngay với lý do
 			_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: err.Error()})
 			return
 		}
@@ -95,8 +96,9 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 			}
 			time.Sleep(m.pollInterval)
 		}
-		// timeout → DEAD
+		// timeout → DEAD và deregister job để tránh allocate muộn
 		_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: "alloc_timeout"})
+		_ = m.svr.DeregisterJob(rid, true)
 	}(roomID, players, createdAt)
 
 	return &store.RoomState{RoomID: roomID, Players: players, CreatedAt: createdAt, Status: "OPENED"}, nil

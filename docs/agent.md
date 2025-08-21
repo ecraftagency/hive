@@ -39,12 +39,19 @@
 
 ## Nomad
 - SDK: `github.com/hashicorp/nomad/api`
+- Pre-check (Plan) trước khi register job: dùng `Jobs.Plan(job, true, ...)` để xác minh có node phù hợp/tài nguyên đủ. Nếu Plan fail → set room `DEAD` ngay với `fail_reason=insufficient_resources|plan_error` (hoặc `plan_no_response`) và không gọi register. Điều này tránh tình trạng room bị đánh dấu DEAD nhưng Nomad vẫn có thể tạo allocation muộn do backlog trong hàng đợi schedule.
 - Job `game-server-<room_id>`: driver `exec`, command `/usr/local/bin/server`, args: `["${NOMAD_PORT_http}", "<room_id>", "<bearer_token>"]`, dynamic port label `http`
 - Double-check allocate:
   1) Kiểm tra Nomad allocation RUNNING/healthy.
   2) Readiness probe TCP connect đến room service sau `double_check_interval` (2s). Pass 2 lần probe mới set `ACTIVED`.
 - Idempotency: ràng buộc 1 job/room; nếu retry trong allocate window, luôn kiểm tra/đọc lại job hiện có thay vì tạo job mới.
 - Lock phân tán: `lock:room:allocate:<room_id>` với TTL ngắn (≈15s) để tránh race giữa agents.
+
+### Fail reasons (DEAD)
+- `alloc_timeout`: hết thời gian chờ allocation/ready.
+- `server_crash`: job dừng/xóa khi đang ACTIVED mà không có tín hiệu graceful.
+- `insufficient_resources`: Nomad Plan xác định không đủ tài nguyên/không có node phù hợp.
+- `plan_error` | `plan_no_response`: lỗi khi gọi Plan hoặc Nomad không trả về kết quả hợp lệ.
 
 ## Cron & Consistency
 - **Nguyên tắc tối thượng**: `count(RUNNING game-server jobs) == count(ACTIVED rooms)`

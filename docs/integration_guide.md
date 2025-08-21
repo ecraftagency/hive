@@ -52,6 +52,10 @@ http://<agent-host>:8080
 }
 ```
 
+Ghi chú:
+- Agent thực hiện pre-check (Nomad Plan) trước khi register job để tránh trường hợp room bị đánh dấu DEAD nhưng Nomad vẫn có thể tạo allocation muộn do backlog.
+- `fail_reason` có thể là: `alloc_timeout`, `server_crash`, `nomad_error`, `insufficient_resources`, `plan_error`, `plan_no_response`.
+
 ## 2. Client Integration Flow
 
 ### Step 1: Submit Ticket
@@ -255,6 +259,7 @@ const POLLING_CONFIG = {
 ### Room Dead
 - Check allocation timeout
 - Verify Nomad cluster status
+- Nếu thấy `insufficient_resources|plan_error|plan_no_response`: đó là lỗi từ bước Plan (pre-check), client có thể retry sau khi tài nguyên đủ hoặc hệ thống ổn định.
 
 ### Network Errors
 - Implement exponential backoff

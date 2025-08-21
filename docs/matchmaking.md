@@ -33,9 +33,10 @@ Tài liệu này mô tả chi tiết thiết kế Matchmaking (MM) với thời 
 - Agent sinh `room_id = UUID()`, tạo `OPENED_ROOMS:{room_id}` với 2 players.
 - Cập nhật cả hai ticket `status=MATCHED` với `room_id` (trả về cho client). Bắt đầu alloc server async.
 
-4) Allocation → ACTIVED / DEAD (double-check)
-- Thành công (double-check): ghi vào `ACTIVED_ROOMS:{room_id}` (server ip/port, allocation_id), room chuyển ACTIVED.
-- Thất bại/timeout: ghi vào `DEAD_ROOMS:{room_id}` với `fail_reason=alloc_timeout|nomad_error`, room chuyển DEAD.
+4) Allocation → ACTIVED / DEAD (Plan + double-check)
+- Pre-check (Plan): gọi `Jobs.Plan(job, true, ...)` để kiểm tra khả năng đặt. Nếu Plan fail → set `DEAD` ngay với `fail_reason=insufficient_resources|plan_error|plan_no_response` và dừng, không register job.
+- Thành công Plan → register job và thực hiện double-check readiness. Khi pass: ghi vào `ACTIVED_ROOMS:{room_id}` (server ip/port, allocation_id), room chuyển ACTIVED.
+- Thất bại/timeout sau khi register: ghi vào `DEAD_ROOMS:{room_id}` với `fail_reason=alloc_timeout|nomad_error`, room chuyển DEAD. Đồng thời dừng/deregister job để tránh allocate muộn từ hàng đợi Nomad.
 - Client sau khi `MATCHED` sẽ poll `/rooms/:room_id` đến khi ACTIVED (nhận server) hoặc DEAD (dừng).
 
 5) Lifecycle sau allocate → FULFILLED/DEAD(crash)
@@ -65,7 +66,7 @@ Tài liệu này mô tả chi tiết thiết kế Matchmaking (MM) với thời 
 - Room
   - `mm:room:opened:<room_id>` → `{room_id, players:[A,B], created_at, status:OPENED}` (EXPIRE allocate_ttl_seconds)
   - `mm:room:actived:<room_id>` → `{room_id, players, server:{ip,port,allocation_id}, created_at, activated_at, status:ACTIVED, shutdown_token?}`
-  - `mm:room:dead:<room_id>` → `{room_id, players, fail_reason, created_at, dead_at, status:DEAD}` (EXPIRE dead_fulfilled_ttl) với `fail_reason=alloc_timeout|nomad_error|server_crash`
+  - `mm:room:dead:<room_id>` → `{room_id, players, fail_reason, created_at, dead_at, status:DEAD}` (EXPIRE dead_fulfilled_ttl) với `fail_reason=alloc_timeout|nomad_error|server_crash|insufficient_resources|plan_error|plan_no_response`
   - `mm:room:fulfilled:<room_id>` → `{room_id, players, result?, end_reason, created_at, fulfilled_at, graceful_at, status:FULFILLED}` (EXPIRE dead_fulfilled_ttl)
   - Index: `mm:rooms:opened`, `mm:rooms:actived`, `mm:rooms:dead`, `mm:rooms:fulfilled`
   - Metadata khuyến nghị: `version` (CAS), `state_rank`, `attempt_count`, `nomad_job_id`, `alloc_id`, `node`

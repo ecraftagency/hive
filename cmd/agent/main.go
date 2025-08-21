@@ -257,6 +257,8 @@ func main() {
 			}
 		}
 		_ = storeMgr.SaveRoomState(c, *st)
+		// best-effort deregister job ngay khi graceful shutdown
+		_ = svrMgr.DeregisterJob(rid, true)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
