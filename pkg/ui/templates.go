@@ -96,11 +96,19 @@ const AgentUIHTML = `<!doctype html>
   function renderFulfilled(items){
     const tb = document.querySelector('#tblFulfilled tbody'); tb.innerHTML='';
     (items||[]).forEach(it=>{
-      const players = (it.players||[]).join(', ');
       const server = (it.server_ip&&it.port)? (it.server_ip+':'+it.port) : '';
       const tr=document.createElement('tr');
+      // Cell players tách 2 dòng: winner và scores
+      const winner = it.winner ? ('<div><b>Winner:</b> '+it.winner+'</div>') : '';
+      let scores = '';
+      if(it.scores){
+        const parts = [];
+        for (const k in it.scores){ parts.push(k+': '+it.scores[k]); }
+        scores = '<div><b>Scores:</b> '+parts.join(', ')+'</div>';
+      }
+      const playersCell = winner + scores;
       tr.innerHTML = '<td class="mono">'+(it.room_id||'')+'</td>'+
-                     '<td>'+players+'</td>'+
+                     '<td>'+(playersCell|| (it.players||[]).join(', '))+'</td>'+
                      '<td>'+server+'</td>'+
                      '<td>'+(it.end_reason||'')+'</td>'+
                      '<td>'+ts2(it.graceful_at_unix||it.graceful_at||0)+'</td>'+
@@ -202,110 +210,4 @@ setInterval(load,2000); load();
 </script>
 </body></html>`
 
-// WebClientHTML: trang client. Dùng fmt.Sprintf(WebClientHTML, defaultPlayerName, namesPoolJSON, agentBaseURL)
-const WebClientHTML = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Dummy Client</title>
-  <style>
-    :root{ --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#9ca3af; --accent:#22d3ee; }
-    body { font-family: ui-sans-serif,system-ui,-apple-system; background:var(--bg); color:var(--text); margin:0; }
-    .wrap{ max-width:800px; margin:32px auto; padding:16px; }
-    .card{ background:var(--card); border:1px solid #1f2937; border-radius:10px; padding:16px; margin-bottom:16px; box-shadow:0 6px 24px rgba(0,0,0,.25)}
-    input, button { padding: 10px 12px; margin: 6px 4px; border-radius:8px; border:1px solid #374151; background:#0b1220; color:var(--text); }
-    button{ background:#0ea5e9; color:white; border:none; cursor:pointer }
-    button:hover{ filter:brightness(1.1) }
-    a{ color: var(--accent); }
-    #log { white-space: pre-line; background:#0b1220; border-radius:10px; padding:12px; font-family: ui-monospace, SFMono-Regular; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <h2>Dummy Web Client</h2>
-      <div>
-        <input id="playerId" placeholder="player id" />
-        <button id="btnRand">Random Name</button>
-      </div>
-      <div style="margin: 12px 0;">
-        <button id="btnJoin">Join</button>
-        <button id="btnCancel" disabled>Cancel Ticket</button>
-      </div>
-      <div><b>Server:</b> <a id="server" href="#" target="_blank"></a></div>
-    </div>
-
-    <div class="card">
-      <h3>Log</h3>
-      <div id="log"></div>
-    </div>
-  </div>
-<script>
-(function(){
-  const logEl = document.getElementById('log');
-  const serverEl = document.getElementById('server');
-  const btnJoin = document.getElementById('btnJoin');
-  const btnCancel = document.getElementById('btnCancel');
-  const AGENT = '%[3]s';
-  let hbTimer = null;
-  let currentTicketId = '';
-
-  function log(msg){ const ts = new Date().toISOString(); logEl.textContent += '['+ts+'] '+msg+'\n'; logEl.scrollTop = logEl.scrollHeight; }
-  const val = id => (document.getElementById(id).value||'').trim();
-
-  async function apiGet(url){ const res = await fetch(url); if(!res.ok){ throw new Error(res.status + ': ' + await res.text()); } return res.json(); }
-  async function apiPost(url, body){ const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) }); if(!res.ok){ throw new Error(res.status + ': ' + await res.text()); } return res.json(); }
-
-  function startHeartbeat(host, port, playerId){ if(hbTimer){ clearInterval(hbTimer); } const url = 'http://'+host+':'+port+'/heartbeat?player_id='+encodeURIComponent(playerId); hbTimer = setInterval(async function(){ try{ await fetch(url, { mode:'cors' }); log('heartbeat ok '+host+':'+port); }catch(e){ log('heartbeat failed: '+e.message); } }, 3000); }
-
-  async function pollRoom(roomId, playerId){ log('Polling room info for '+roomId+' ...'); const deadline = Date.now()+120000; while(Date.now()<deadline){ try{ const info = await apiGet(AGENT+'/rooms/'+encodeURIComponent(roomId)); log('Room info: '+JSON.stringify(info)); 
-    
-    // Case 1: RoomState from Redis - start heartbeat when ACTIVED
-    if(info && info.status==='ACTIVED'){
-      if(info.server_ip && (info.port > 0 || parseInt(info.port) > 0)){
-        const url = 'http://'+info.server_ip+':'+info.port+'/';
-        serverEl.textContent = url;
-        serverEl.href = url;
-        log('Server ready (Redis) '+url);
-        startHeartbeat(info.server_ip, info.port, playerId);
-        return;
-      } else {
-        log('ACTIVED but no server info yet, keep polling...');
-      }
-    }
-    
-    // Case 2: RoomInfo from Nomad (has host_ip, ports)
-    if(info && info.host_ip && info.ports){
-      const port = info.ports.http || Object.values(info.ports)[0];
-      if(port){
-        const url = 'http://'+info.host_ip+':'+port+'/';
-        serverEl.textContent = url;
-        serverEl.href = url;
-        log('Server ready (Nomad) '+url);
-        startHeartbeat(info.host_ip, port, playerId);
-        return;
-      }
-    }
-    
-    if(info && info.status==='DEAD'){ log('Room DEAD: '+(info.fail_reason||'')); return }
-    if(info && info.status==='FULFILLED'){ log('Room FULFILLED (terminal)'); return }
-    
-  }catch(e){ log('pollRoom error: '+e.message); } await new Promise(r=>setTimeout(r,2000)); } log('Server info not ready yet'); }
-
-  async function pollTicket(ticketId, playerId){ log('Polling ticket '+ticketId+' ...'); while(true){ try{ const st = await apiGet(AGENT+'/tickets/'+encodeURIComponent(ticketId)); if(st.status==='OPENED'){ await new Promise(r=>setTimeout(r,2000)); continue } if(st.status==='MATCHED' && st.room_id){ log('Matched room '+st.room_id); await pollRoom(st.room_id, playerId); break } if(st.status==='EXPIRED' || st.status==='REJECTED'){ log('Ticket '+st.status); btnCancel.disabled = true; currentTicketId=''; break } }catch(e){ log('ticket poll failed: '+e.message); break } }
-  }
-
-  async function join(){ const playerId = val('playerId'); if(!playerId){ log('Please input player id'); return } try{ const rs = await apiPost(AGENT+'/tickets', { player_id: playerId }); if(rs.status==='REJECTED'){ log('Ticket rejected'); return } currentTicketId = rs.ticket_id; log('Ticket OPENED '+currentTicketId); btnCancel.disabled = false; await pollTicket(currentTicketId, playerId); }catch(e){ log('join failed: '+e.message); }
-  }
-
-  async function cancelTicket(){ if(!currentTicketId){ return } try{ const rs = await apiPost(AGENT+'/tickets/'+encodeURIComponent(currentTicketId)+'/cancel', {}); log('Cancel result: '+(rs.status||'')); btnCancel.disabled = true; currentTicketId=''; }catch(e){ log('cancel failed: '+e.message); }
-  }
-
-  document.getElementById('btnRand').addEventListener('click', function(){ const pool=%[2]s; const pick = pool[Math.floor(Math.random()*pool.length)]+'-'+Math.floor(Math.random()*1000); document.getElementById('playerId').value = pick; });
-  document.getElementById('playerId').value = '%[1]s';
-  btnJoin.addEventListener('click', join);
-  btnCancel.addEventListener('click', cancelTicket);
-})();
-</script>
-</body>
-</html>`
+// (đã loại bỏ) WebClientHTML do cmd/web bị xoá khỏi project

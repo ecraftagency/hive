@@ -1,7 +1,7 @@
-.PHONY: build clean agent server client web deploy-agent deploy-server deploy-web
+.PHONY: build clean agent server client deploy-agent deploy-server
 
 # Build all components
-build: agent server client web
+build: agent server client
 
 # Build Agent
 agent:
@@ -15,9 +15,6 @@ server:
 client:
 	go build -o bin/client cmd/client/main.go
 
-# Build Web Client
-web:
-	go build -o bin/web cmd/web/main.go
 
 # Deploy Agent to remote host
 deploy-agent:
@@ -27,9 +24,6 @@ deploy-agent:
 deploy-server:
 	./scripts/deploy-server.sh
 
-# Deploy Web client to remote host (no Nomad job control)
-deploy-web:
-	./scripts/deploy-web.sh
 
 # Clean build artifacts
 clean:
@@ -47,9 +41,6 @@ run-server: server
 run-client: client
 	./bin/client
 
-# Run Web
-run-web: web
-	./bin/web
 
 # Test Server Manager
 test-server-manager:

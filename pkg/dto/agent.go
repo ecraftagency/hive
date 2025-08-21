@@ -13,8 +13,9 @@ type CancelTicketRequest struct {
 
 // Shutdown từ server → agent
 type ShutdownRequest struct {
-	Reason string `json:"reason" binding:"required"` // no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received
-	At     int64  `json:"at"`                        // optional unix ts; default now
+	Reason  string         `json:"reason" binding:"required"` // no_clients|client_disconnected|afk_timeout|game_cycle_completed|signal_received
+	At      int64          `json:"at"`                        // optional unix ts; default now
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // Response DTOs

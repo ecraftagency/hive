@@ -239,6 +239,23 @@ func main() {
 		st.EndReason = body.Reason
 		st.FulfilledAt = body.At
 		st.GracefulAt = body.At
+		// Details (winner/scores) nếu có
+		if body.Details != nil {
+			if v, ok := body.Details["winner"].(string); ok {
+				st.Winner = v
+			}
+			if m, ok := body.Details["scores"].(map[string]interface{}); ok {
+				st.Scores = map[string]int{}
+				for k, vv := range m {
+					switch n := vv.(type) {
+					case float64:
+						st.Scores[k] = int(n)
+					case int:
+						st.Scores[k] = n
+					}
+				}
+			}
+		}
 		_ = storeMgr.SaveRoomState(c, *st)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})

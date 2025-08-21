@@ -54,8 +54,10 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 	_ = m.store.SaveRoomState(ctx, store.RoomState{RoomID: roomID, Players: players, CreatedAt: createdAt, Status: "OPENED"})
 	// allocate async
 	go func(rid string, plist []string, created int64) {
-		// allocate job
-		if err := m.svr.RunGameServer(rid); err != nil {
+		// allocate job với command mới
+		command := "/usr/local/bin/boardserver/server.x86_64"
+		args := []string{"-port", "${NOMAD_PORT_http}", "-serverId", rid, "-token", "1234abcd", "-nographics", "-batchmode"}
+		if err := m.svr.RunGameServerV2(rid, 400, 400, command, args); err != nil {
 			_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: err.Error()})
 			return
 		}

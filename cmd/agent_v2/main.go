@@ -96,7 +96,7 @@ func main() {
 		}
 
 		// Hardcoded resource values
-		cpu := 1024 * 6       // 2048 MHz
+		cpu := 1024 * 5       // 2048 MHz
 		memoryMB := 1024 * 10 // 2048 MB
 
 		// Parse game_type from query param

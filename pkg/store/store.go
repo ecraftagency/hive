@@ -11,18 +11,20 @@ import (
 )
 
 type RoomState struct {
-	RoomID       string   `json:"room_id"`
-	AllocationID string   `json:"allocation_id"`
-	ServerIP     string   `json:"server_ip"`
-	Port         int      `json:"port"`
-	Players      []string `json:"players"`
-	CreatedAt    int64    `json:"created_at_unix"`
-	Status       string   `json:"status,omitempty"`
-	FailReason   string   `json:"fail_reason,omitempty"`
-	EndReason    string   `json:"end_reason,omitempty"`
-	FulfilledAt  int64    `json:"fulfilled_at_unix,omitempty"`
-	DeadAt       int64    `json:"dead_at_unix,omitempty"`
-	GracefulAt   int64    `json:"graceful_at_unix,omitempty"`
+	RoomID       string         `json:"room_id"`
+	AllocationID string         `json:"allocation_id"`
+	ServerIP     string         `json:"server_ip"`
+	Port         int            `json:"port"`
+	Players      []string       `json:"players"`
+	CreatedAt    int64          `json:"created_at_unix"`
+	Status       string         `json:"status,omitempty"`
+	FailReason   string         `json:"fail_reason,omitempty"`
+	EndReason    string         `json:"end_reason,omitempty"`
+	FulfilledAt  int64          `json:"fulfilled_at_unix,omitempty"`
+	DeadAt       int64          `json:"dead_at_unix,omitempty"`
+	GracefulAt   int64          `json:"graceful_at_unix,omitempty"`
+	Winner       string         `json:"winner,omitempty"`
+	Scores       map[string]int `json:"scores,omitempty"`
 }
 
 type PendingCreate struct {

@@ -119,7 +119,7 @@ func (m *Manager) RunGameServer(roomID string) error {
 	// Task group & task
 	tg := api.NewTaskGroup(gName, count)
 	task := api.NewTask(taskName, driver)
-	task.SetConfig("command", "/usr/local/bin/server")
+	task.SetConfig("command", "/usr/local/bin/boardserver/server.x86_64")
 	// args: 1) dynamic port 2) roomID 3) bearer token
 	bearer := m.bearerToken
 	if bearer == "" {
@@ -198,7 +198,7 @@ func (m *Manager) RunGameServerV2(roomID string, cpu int, memoryMB int, command 
 		if bearer == "" {
 			bearer = "1234abcd"
 		}
-		task.SetConfig("args", []string{"-port", "${NOMAD_PORT_http}", "-serverId", roomID, "-token", bearer, "-nographics", "-batchmode"})
+		task.SetConfig("args", []string{"-port", "${NOMAD_PORT_http}", "-session=", roomID, "-token", bearer, "-nographics", "-batchmode"})
 	}
 
 	// Log rotation config

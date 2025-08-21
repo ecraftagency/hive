@@ -27,14 +27,14 @@ func main() {
 
 	fmt.Println("🧪 Test Server Manager với Nomad")
 
-	// Test 1: Tạo game server với RunGameServer
-	fmt.Println("\n1️⃣ Test RunGameServer...")
+	// Test RunGameServer
+	fmt.Println("Testing RunGameServer...")
 	roomID1 := fmt.Sprintf("test-room-%d", time.Now().Unix())
-	err = manager.RunGameServer(roomID1)
+	err = manager.RunGameServerV2(roomID1, 100, 100, "/usr/local/bin/boardserver/server.x86_64", []string{"-port", "${NOMAD_PORT_http}", "-serverId", roomID1, "-token", "1234abcd", "-nographics", "-batchmode"})
 	if err != nil {
-		log.Printf("❌ Lỗi tạo game server: %v", err)
+		fmt.Printf("RunGameServer failed: %v\n", err)
 	} else {
-		fmt.Printf("✅ Đã tạo job: %s\n", roomID1)
+		fmt.Println("RunGameServer succeeded")
 	}
 
 	// Đợi job được allocate
@@ -51,7 +51,7 @@ func main() {
 	// Test 2: Tạo game server với RunGameServerV2 (custom resources)
 	fmt.Println("\n2️⃣ Test RunGameServerV2...")
 	roomID2 := fmt.Sprintf("test-room-v2-%d", time.Now().Unix())
-	err = manager.RunGameServerV2(roomID2, 200, 200, "/usr/local/bin/server", []string{"${NOMAD_PORT_http}", roomID2})
+	err = manager.RunGameServerV2(roomID2, 200, 200, "/usr/local/bin/boardserver/server.x86_64", []string{"-port", "${NOMAD_PORT_http}", "-serverId", roomID2, "-token", "1234abcd", "-nographics", "-batchmode"})
 	if err != nil {
 		log.Printf("❌ Lỗi tạo game server V2: %v", err)
 	} else {
@@ -77,4 +77,3 @@ func main() {
 
 	fmt.Println("\n✅ Test hoàn thành!")
 }
-
