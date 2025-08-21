@@ -125,7 +125,7 @@ func (m *Manager) RunGameServer(roomID string) error {
 	if bearer == "" {
 		bearer = "1234abcd"
 	}
-	task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID, bearer})
+	task.SetConfig("args", []string{"-port", "${NOMAD_PORT_http}", "-serverId", roomID, "-token", bearer, "-nographics", "-batchmode"})
 
 	// Log rotation config
 	maxFiles := 5
@@ -198,7 +198,7 @@ func (m *Manager) RunGameServerV2(roomID string, cpu int, memoryMB int, command 
 		if bearer == "" {
 			bearer = "1234abcd"
 		}
-		task.SetConfig("args", []string{"${NOMAD_PORT_http}", roomID, bearer})
+		task.SetConfig("args", []string{"-port", "${NOMAD_PORT_http}", "-serverId", roomID, "-token", bearer, "-nographics", "-batchmode"})
 	}
 
 	// Log rotation config

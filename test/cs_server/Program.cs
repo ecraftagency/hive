@@ -244,6 +244,8 @@ namespace CsServer
         /// Lấy CancellationToken cho shutdown
         /// </summary>
         public CancellationToken ShutdownToken => _shutdownCts.Token;
+
+        public string RoomId => _roomId;
     }
 
     /// <summary>
@@ -284,15 +286,7 @@ namespace CsServer
         public IActionResult Players()
         {
             var players = _gameServer.GetPlayers();
-            return Ok(new { players, room_id = GetRoomId() });
-        }
-
-        private string GetRoomId()
-        {
-            // Lấy room_id từ command line args hoặc environment
-            return Environment.GetCommandLineArgs().Length > 2 
-                ? Environment.GetCommandLineArgs()[2] 
-                : "unknown";
+            return Ok(new { players, room_id = _gameServer.RoomId });
         }
     }
 
@@ -303,17 +297,36 @@ namespace CsServer
     {
         public static async Task Main(string[] args)
         {
-            // Parse command line arguments
-            if (args.Length < 2)
+            // Parse command line arguments with new flag structure
+            string port = string.Empty;
+            string roomId = string.Empty;
+            string bearerToken = string.Empty;
+
+            for (int i = 0; i < args.Length; i++)
             {
-                Console.WriteLine("Usage: cs_server <port> <room_id> [bearer_token]");
-                Console.WriteLine("Example: cs_server 8080 abc123 1234abcd");
-                return;
+                switch (args[i])
+                {
+                    case "-port":
+                        if (i + 1 < args.Length) { port = args[i + 1]; i++; }
+                        break;
+                    case "-serverId":
+                        if (i + 1 < args.Length) { roomId = args[i + 1]; i++; }
+                        break;
+                    case "-token":
+                        if (i + 1 < args.Length) { bearerToken = args[i + 1]; i++; }
+                        break;
+                }
             }
 
-            var port = args[0];
-            var roomId = args[1];
-            var bearerToken = args.Length > 2 ? args[2] : "1234abcd";
+            if (string.IsNullOrWhiteSpace(port) || string.IsNullOrWhiteSpace(roomId))
+            {
+                Console.WriteLine("Usage: cs_server -port <port> -serverId <room_id> -token <bearer_token>");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(bearerToken))
+            {
+                bearerToken = "1234abcd";
+            }
             var agentBaseUrl = Environment.GetEnvironmentVariable("AGENT_BASE_URL") ?? "http://127.0.0.1:8080";
 
             Console.WriteLine($"Starting CS Game Server:");

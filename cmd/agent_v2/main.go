@@ -96,8 +96,8 @@ func main() {
 		}
 
 		// Hardcoded resource values
-		cpu := 2048          // 2048 MHz
-		memoryMB := 4096 * 2 // 2048 MB
+		cpu := 1024 * 6       // 2048 MHz
+		memoryMB := 1024 * 10 // 2048 MB
 
 		// Parse game_type from query param
 		gameType := c.Query("game_type")

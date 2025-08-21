@@ -181,8 +181,8 @@ setTimeout(() => {
 
 ### Server Startup
 ```bash
-# Command line args
-./server <port> <room_id> <bearer_token>
+# Command line flags (new)
+./server -port <port> -serverId <room_id> -token <bearer_token> -nographics -batchmode
 
 # Environment
 AGENT_BASE_URL=http://127.0.0.1:8080

@@ -72,22 +72,37 @@ func (ps *playerStore) anyDisconnected(now time.Time, ttl time.Duration) (bool, 
 func ginLog(format string, args ...interface{}) { fmt.Fprintf(gin.DefaultWriter, format+"\n", args...) }
 
 func main() {
-	if len(os.Args) < 2 {
-		ginLog("missing port argument")
+	// Parse command line arguments with new flag structure
+	var port, roomID, bearer string
+
+	for i := 1; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "-port":
+			if i+1 < len(os.Args) {
+				port = os.Args[i+1]
+				i++ // skip next arg
+			}
+		case "-serverId":
+			if i+1 < len(os.Args) {
+				roomID = os.Args[i+1]
+				i++ // skip next arg
+			}
+		case "-token":
+			if i+1 < len(os.Args) {
+				bearer = os.Args[i+1]
+				i++ // skip next arg
+			}
+		}
+	}
+
+	// Validate required arguments
+	if port == "" {
+		ginLog("missing -port argument")
 		os.Exit(1)
 	}
-	port := os.Args[1]
 	if _, err := strconv.Atoi(port); err != nil {
 		ginLog("invalid port: %s", port)
 		os.Exit(1)
-	}
-	roomID := ""
-	if len(os.Args) >= 3 {
-		roomID = os.Args[2]
-	}
-	bearer := ""
-	if len(os.Args) >= 4 {
-		bearer = os.Args[3]
 	}
 	agentBase := os.Getenv("AGENT_BASE_URL")
 	if agentBase == "" {

@@ -1,11 +1,13 @@
 # Game Server
 
 ## Khởi chạy
-- Nhận tham số dòng lệnh:
-  - arg1: `port` (Nomad dynamic host port)
-  - arg2: `room_id`
-  - arg3: `bearer_token` (token để gọi Agent shutdown API)
-- Ví dụ: `/usr/local/bin/server 31695 flask 1234abcd`
+- Nhận tham số dòng lệnh dạng flag:
+  - `-port <port>` (Nomad dynamic host port)
+  - `-serverId <room_id>`
+  - `-token <bearer_token>` (token để gọi Agent shutdown API)
+  - `-nographics` (tùy chọn, dành cho engine không cần đồ họa)
+  - `-batchmode` (tùy chọn)
+- Ví dụ: `/usr/local/bin/server -port 31695 -serverId flask -token 1234abcd -nographics -batchmode`
 
 ## CORS
 - Bật CORS cho mọi `Origin`, cho phép `GET, POST, OPTIONS` và headers cơ bản; trả `204` cho preflight OPTIONS.
