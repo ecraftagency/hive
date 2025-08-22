@@ -19,7 +19,7 @@ namespace CsClient
 		private const int ROOM_MAX_WAIT_SECONDS = 180;
 		private const int HEARTBEAT_DELAY_SECONDS = 5;
 		private const int HEARTBEAT_TOTAL_SECONDS = 60;
-		private const int MAX_ACTIVE_CLIENTS = 20;
+		private const int MAX_ACTIVE_CLIENTS = 16;
 
 		private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 		private static readonly ConcurrentDictionary<string, RoomRow> RoomTable = new();

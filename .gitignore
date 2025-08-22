@@ -3,3 +3,6 @@ test/cs_client/bin
 test/cs_client/obj
 test/cs_server/bin
 test/cs_server/obj
+test/integration_agent/bin
+test/integration_agent/obj
+test/integration_agent/artifact

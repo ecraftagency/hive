@@ -7,6 +7,7 @@ using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
+using System.Runtime.Loader;
 
 namespace CsServer
 {
@@ -152,6 +153,7 @@ namespace CsServer
             var url = $"{_agentBaseUrl}/rooms/{_roomId}/shutdown";
 
             _logger.LogInformation("Sending shutdown callback: {Url} reason={Reason}", url, reason);
+            Console.WriteLine($"Sending shutdown callback: {url} reason={reason}");
 
             try
             {
@@ -161,22 +163,44 @@ namespace CsServer
                 };
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _bearerToken);
 
-                var response = await _httpClient.SendAsync(request);
+                // retry 1 lần nếu lỗi tạm thời
+                HttpResponseMessage? response = null;
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    try
+                    {
+                        response = await _httpClient.SendAsync(request);
+                        break;
+                    }
+                    catch (Exception ex) when (attempt == 0)
+                    {
+                        Console.WriteLine($"Retry sending shutdown callback after error: {ex.Message}");
+                        await Task.Delay(500);
+                    }
+                }
+                if (response == null)
+                {
+                    Console.WriteLine("Failed to create HTTP response for shutdown callback");
+                    return;
+                }
                 var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation("Shutdown callback sent successfully: status={StatusCode}", response.StatusCode);
+                    Console.WriteLine($"Shutdown callback sent OK: status={(int)response.StatusCode}");
                 }
                 else
                 {
                     _logger.LogError("Shutdown callback failed with status: {StatusCode}, content: {Content}", 
                         response.StatusCode, responseContent);
+                    Console.WriteLine($"Shutdown callback failed: status={(int)response.StatusCode} content={responseContent}");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Shutdown callback failed");
+                Console.WriteLine($"Shutdown callback exception: {ex.Message}");
             }
         }
 
@@ -221,6 +245,7 @@ namespace CsServer
         public async Task HandleSignalShutdownAsync()
         {
             _logger.LogInformation("Received signal; sending graceful shutdown");
+            Console.WriteLine("Received signal; sending graceful shutdown");
             await SendShutdownCallbackAsync("signal_received");
         }
 
@@ -288,6 +313,17 @@ namespace CsServer
             var players = _gameServer.GetPlayers();
             return Ok(new { players, room_id = _gameServer.RoomId });
         }
+
+        /// <summary>
+        /// Trigger signal shutdown endpoint - để test signal shutdown
+        /// </summary>
+        [HttpPost("trigger-shutdown")]
+        public async Task<IActionResult> TriggerShutdown()
+        {
+            _logger.LogInformation("Triggering signal shutdown via HTTP endpoint");
+            await _gameServer.HandleSignalShutdownAsync();
+            return Ok(new { ok = true, message = "Signal shutdown triggered" });
+        }
     }
 
     /// <summary>
@@ -327,7 +363,7 @@ namespace CsServer
             {
                 bearerToken = "1234abcd";
             }
-            var agentBaseUrl = Environment.GetEnvironmentVariable("AGENT_BASE_URL") ?? "http://127.0.0.1:8080";
+            var agentBaseUrl = Environment.GetEnvironmentVariable("AGENT_BASE_URL") ?? "http://localhost:8081";
 
             Console.WriteLine($"Starting CS Game Server:");
             Console.WriteLine($"  Port: {port}");
@@ -388,7 +424,36 @@ namespace CsServer
                 e.Cancel = true;
                 Console.WriteLine("Received Ctrl+C, initiating graceful shutdown...");
                 await gameServer.HandleSignalShutdownAsync();
+                // Đợi ngắn để đảm bảo callback tới agent trước khi hạ tiến trình
+                await Task.Delay(1000);
                 cts.Cancel();
+            };
+
+            // Bắt SIGTERM (docker stop, kill -15) qua Unloading
+            AssemblyLoadContext.Default.Unloading += _ =>
+            {
+                try
+                {
+                    Console.WriteLine("SIGTERM received, initiating graceful shutdown...");
+                    gameServer.HandleSignalShutdownAsync().GetAwaiter().GetResult();
+                    // Đợi ngắn để đảm bảo callback tới agent trước khi hạ tiến trình
+                    Thread.Sleep(1000);
+                    cts.Cancel();
+                }
+                catch { /* best-effort */ }
+            };
+
+            // Best-effort gửi callback khi ProcessExit (không hoạt động với SIGKILL -9)
+            AppDomain.CurrentDomain.ProcessExit += (sender, e) =>
+            {
+                try
+                {
+                    Console.WriteLine("ProcessExit, sending graceful shutdown callback...");
+                    gameServer.HandleSignalShutdownAsync().GetAwaiter().GetResult();
+                    // Best-effort wait
+                    Thread.Sleep(500);
+                }
+                catch { /* best-effort */ }
             };
 
             try
