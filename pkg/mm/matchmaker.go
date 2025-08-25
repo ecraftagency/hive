@@ -95,8 +95,32 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 					}
 				}
 				if port > 0 {
+					// Trước khi ACTIVED, enforce uniqueness: không cho phép player nằm ở 2 ACTIVED rooms
+					conflict := false
+					if ids, lerr := m.store.ListRooms(context.Background()); lerr == nil {
+						for _, oid := range ids {
+							if oid == rid {
+								continue
+							}
+							if ost, ge := m.store.GetRoomState(context.Background(), oid); ge == nil && ost != nil && ost.Status == "ACTIVED" {
+								for _, op := range ost.Players {
+									for _, np := range plist {
+										if op == np {
+											conflict = true
+											break
+										}
+									}
+								}
+							}
+						}
+					}
+					if conflict {
+						// Đánh dấu phòng mới DEAD để tránh trùng player
+						_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: "duplicate_player_active"})
+						_ = m.svr.DeregisterJob(rid, false)
+						return
+					}
 					// Server is ready when Nomad job is running and we have IP/port
-					// No need for TCP probe - just trust Nomad
 					_ = m.store.SaveRoomState(context.Background(), store.RoomState{
 						RoomID:       rid,
 						AllocationID: info.AllocationID,

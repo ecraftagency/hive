@@ -8,26 +8,32 @@ using System.Threading.Tasks;
 
 /*
 ================================================================================
-Integration Flow (Agent) – Hướng dẫn tích hợp C# (cập nhật)
+Integration Flow (Agent) – Hướng dẫn tích hợp C# (cập nhật theo reconnect)
 ================================================================================
 Mục tiêu: Mẫu code tối giản, có thể copy/paste để tích hợp Web/Game client với Agent.
 
-Luồng tổng quát:
-1) Gọi POST /tickets với player_id (random name + 3 số)
-2) Poll GET /tickets/:ticket_id mỗi 5s đến khi status=MATCHED → nhận room_id
-3) Poll GET /rooms/:room_id mỗi 3s đến khi status=ACTIVED (hoặc có host_ip+port từ Nomad) → nhận endpoint http://IP:PORT
-4) Gửi heartbeat trực tiếp đến http://IP:PORT/heartbeat?player_id=...
+Luồng tổng quát (join lần đầu):
+1) POST /tickets với player_id (random name + 3 số)
+2) Poll GET /tickets/:ticket_id mỗi 5s đến khi status=MATCHED → lấy room_id
+3) Poll GET /rooms/:room_id mỗi 3s đến khi status=ACTIVED (hoặc có host_ip+port từ Nomad) → lấy endpoint http://IP:PORT
+4) Gửi heartbeat trực tiếp: http://IP:PORT/heartbeat?player_id=...
+
+Luồng reconnect (khi client tạm ngừng heartbeat rồi muốn quay lại):
+1) GET /reconnect/lookup?player_id=... → các kết quả có thể có:
+   - 200 + {room_id, reconnectable:true}: player đang thuộc 1 room ACTIVED → tiếp tục bước (2).
+   - 404 + {reconnectable:false, reason:"not_found"}: player không thuộc room ACTIVED nào → không reconnect được.
+   - 409 + {error:"player_in_multiple_rooms"}: invariant vi phạm (agent phát hiện player nằm >1 room) → cần báo lỗi/điều tra.
+2) Nếu có room_id: poll GET /rooms/:room_id đến khi có endpoint (ACTIVED hoặc có host_ip/port) → gửi lại heartbeat ngay.
 
 Lưu ý quan trọng:
-- Poll ticket tối đa 150s (>= TTL 120s), ticket có thể EXPIRED → dừng sớm.
+- Poll ticket tối đa 150s (>= TTL), ticket có thể EXPIRED/REJECTED → dừng sớm.
 - Poll room tối đa 180s:
-  + Nếu ACTIVED: dùng server_ip/port để kết nối.
-  + Nếu có host_ip+port (Nomad) trước khi ACTIVED: vẫn có thể dùng thử endpoint để kết nối (fallback).
-  + Nếu DEAD: dừng và báo lỗi với fail reason (server có thể trả kèm trong JSON).
-  + Nếu FULFILLED: coi như kết thúc chu kỳ/đã shutdown, dừng poll (không có endpoint để kết nối).
-- Heartbeat không qua proxy của agent (gửi trực tiếp tới server).
+  + Nếu ACTIVED hoặc có host_ip/port: dùng endpoint để kết nối.
+  + Nếu DEAD: dừng và báo lỗi với fail reason.
+  + Nếu FULFILLED: coi như kết thúc chu kỳ/đã shutdown, dừng poll.
+- Heartbeat gửi trực tiếp tới server, không qua Agent.
 - Bật JSON PropertyNameCaseInsensitive để khớp casing linh hoạt.
-- Log lỗi HTTP (status code + body) để dễ điều tra.
+- Luôn log lỗi HTTP (status code + body) để điều tra.
 ================================================================================
 */
 
@@ -78,6 +84,95 @@ namespace CsClient
 				HeartbeatLoopDirect(http, url1, player1),
 				HeartbeatLoopDirect(http, url2, player2)
 			);
+
+			// Demo reconnect toàn vẹn: minh hoạ lookup và kết nối lại nếu còn room ACTIVED
+			await DemoReconnectFlow(http, player1);
+		}
+
+		// Demo reconnect flow: minh hoạ đầy đủ các case 200/404/409 và poll lại room endpoint
+		private static async Task DemoReconnectFlow(HttpClient http, string playerId)
+		{
+			try
+			{
+				var (reconnectable, roomId, status, raw) = await LookupRoomVerbose(http, playerId);
+				if (status == 409)
+				{
+					Console.WriteLine($"⚠️  Lookup conflict: player in multiple rooms. player={playerId}, body={raw}");
+					return;
+				}
+				if (status == 404)
+				{
+					Console.WriteLine($"ℹ️  Lookup not found: player={playerId}, body={raw}");
+					return;
+				}
+				if (status != 200)
+				{
+					Console.WriteLine($"❌ Lookup unexpected HTTP {status}: {raw}");
+					return;
+				}
+				if (!reconnectable || string.IsNullOrEmpty(roomId))
+				{
+					Console.WriteLine($"ℹ️  Not reconnectable now: player={playerId}, body={raw}");
+					return;
+				}
+				// Có room_id → poll /rooms/:room_id để lấy endpoint rồi gửi vài heartbeat minh hoạ
+				var (ip, port) = await PollRoomUntilReady(http, roomId);
+				var serverUrl = $"http://{ip}:{port}";
+				Console.WriteLine($"🔁 Reconnecting: player={playerId} → {serverUrl}");
+				for (int i = 0; i < 3; i++)
+				{
+					await HeartbeatOnce(http, serverUrl, playerId);
+					await Task.Delay(1000);
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"❌ Reconnect flow error: {ex.Message}");
+			}
+		}
+
+		private static async Task<(bool reconnectable, string? roomId)> LookupRoom(HttpClient http, string playerId)
+		{
+			try
+			{
+				var url = $"{AgentBaseUrl}/reconnect/lookup?player_id={Uri.EscapeDataString(playerId)}";
+				var resp = await http.GetAsync(url);
+				var raw = await resp.Content.ReadAsStringAsync();
+				if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+				{
+					var obj = JsonSerializer.Deserialize<LookupResp>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+					return (obj?.Reconnectable == true, obj?.RoomId);
+				}
+				return (false, null);
+			}
+			catch { return (false, null); }
+		}
+
+		// LookupRoomVerbose: trả thêm HTTP status và raw body để log rõ ràng tất cả case
+		private static async Task<(bool reconnectable, string? roomId, int httpStatus, string raw)> LookupRoomVerbose(HttpClient http, string playerId)
+		{
+			var url = $"{AgentBaseUrl}/reconnect/lookup?player_id={Uri.EscapeDataString(playerId)}";
+			try
+			{
+				var resp = await http.GetAsync(url);
+				var raw = await resp.Content.ReadAsStringAsync();
+				if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+				{
+					var obj = JsonSerializer.Deserialize<LookupResp>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+					return (obj?.Reconnectable == true, obj?.RoomId, (int)resp.StatusCode, raw);
+				}
+				return (false, null, (int)resp.StatusCode, raw);
+			}
+			catch (Exception ex)
+			{
+				return (false, null, 0, ex.Message);
+			}
+		}
+
+		private class LookupResp
+		{
+			[JsonPropertyName("reconnectable")] public bool Reconnectable { get; set; }
+			[JsonPropertyName("room_id")] public string? RoomId { get; set; }
 		}
 
 		// Sinh player_id ngẫu nhiên theo name + 3 số (VD: alex123)

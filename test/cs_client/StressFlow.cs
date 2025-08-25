@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Spectre.Console;
 
 namespace CsClient
 {
@@ -19,6 +20,7 @@ namespace CsClient
 		private const int ROOM_MAX_WAIT_SECONDS = 180;
 		private const int HEARTBEAT_DELAY_SECONDS = 5;
 		private const int HEARTBEAT_TOTAL_SECONDS = 60;
+		private const int DISCONNECT_AFTER_SECONDS = 10; // một client sẽ ngắt HB sau 10s
 		private const int MAX_ACTIVE_CLIENTS = 16;
 
 		private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -29,7 +31,7 @@ namespace CsClient
 		public static async Task Run()
 		{
 			Console.OutputEncoding = Encoding.UTF8;
-			Console.WriteLine("🧪 Stress flow starting... (spawn client every 5s, up to 100 active)\n");
+			AnsiConsole.MarkupLine("[bold]🧪 Stress flow starting...[/] (spawn client every 5s, up to 100 active)\n");
 
 			var renderCts = new CancellationTokenSource();
 			var renderTask = Task.Run(() => RenderLoop(renderCts.Token));
@@ -68,8 +70,16 @@ namespace CsClient
 				row.ServerUrl = $"http://{ip}:{port}";
 				row.Status = "ACTIVED";
 
-				// Heartbeat for 60s, then stop and remove room from table
-				await HeartbeatWindow(row.ServerUrl, playerId, HEARTBEAT_TOTAL_SECONDS, row);
+				// Heartbeat, nhưng 50% client sẽ ngắt sau 10s rồi reconnect
+				bool willDisconnect = GetRandomInt(0, 2) == 0;
+				if (willDisconnect)
+				{
+					await HeartbeatPartialAndReconnect(row.ServerUrl, playerId, row);
+				}
+				else
+				{
+					await HeartbeatWindow(row.ServerUrl, playerId, HEARTBEAT_TOTAL_SECONDS, row);
+				}
 			}
 			catch (Exception)
 			{
@@ -99,9 +109,50 @@ namespace CsClient
 				await Task.Delay(TimeSpan.FromSeconds(HEARTBEAT_DELAY_SECONDS));
 			}
 			row.Heartbeat = "STOPPED";
-			// Remove room from table as soon as any player's heartbeat ends
-			RoomTable.TryRemove(row.RoomId, out _);
+			// keep row for display
 		}
+
+		private static async Task HeartbeatPartialAndReconnect(string serverBaseUrl, string playerId, RoomRow row)
+		{
+			// Gửi HB trong 10s, rồi dừng một nhịp, lookup và reconnect lại
+			int loops = DISCONNECT_AFTER_SECONDS / HEARTBEAT_DELAY_SECONDS;
+			for (int i = 0; i < loops; i++)
+			{
+				var url = $"{serverBaseUrl}/heartbeat?player_id={Uri.EscapeDataString(playerId)}";
+				try { var resp = await Http.GetAsync(url); row.Heartbeat = resp.IsSuccessStatusCode ? "OK" : $"HTTP {(int)resp.StatusCode}"; }
+				catch { row.Heartbeat = "ERR"; }
+				await Task.Delay(TimeSpan.FromSeconds(HEARTBEAT_DELAY_SECONDS));
+			}
+			row.Heartbeat = "STOPPED";
+			// Dừng thêm 10s để server đánh dấu disconnect
+			await Task.Delay(TimeSpan.FromSeconds(10));
+			// Gọi lookup để tìm room hiện hành
+			var lookup = await LookupRoom(playerId);
+			if (lookup.reconnectable && !string.IsNullOrEmpty(lookup.roomId))
+			{
+				// Reconnect ngay
+				await HeartbeatWindow(serverBaseUrl, playerId, HEARTBEAT_TOTAL_SECONDS - DISCONNECT_AFTER_SECONDS - 10, row);
+			}
+		}
+
+		private static async Task<(bool reconnectable, string? roomId)> LookupRoom(string playerId)
+		{
+			try
+			{
+				var url = $"{AgentBaseUrl}/reconnect/lookup?player_id={Uri.EscapeDataString(playerId)}";
+				var resp = await Http.GetAsync(url);
+				var raw = await resp.Content.ReadAsStringAsync();
+				if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+				{
+					var obj = SafeDeserialize<LookupResp>(raw);
+					return (obj?.Reconnectable == true, obj?.RoomId);
+				}
+				return (false, null);
+			}
+			catch { return (false, null); }
+		}
+
+		private class LookupResp { [JsonPropertyName("reconnectable")] public bool Reconnectable { get; set; } [JsonPropertyName("room_id")] public string? RoomId { get; set; } }
 
 		private static async Task<string> SubmitTicket(string playerId)
 		{
@@ -181,23 +232,64 @@ namespace CsClient
 
 		private static void RenderLoop(CancellationToken token)
 		{
-			while (!token.IsCancellationRequested)
+			var table = new Table().Border(TableBorder.Rounded).Expand().AddColumns(
+				"room_id", "status", "connected(players)", "disconnected(players)", "server url", "hb");
+			AnsiConsole.Live(table).Start(ctx =>
 			{
-				lock (RenderLock)
+				while (!token.IsCancellationRequested)
 				{
-					Console.Clear();
-					Console.WriteLine($"🧪 Stress Flow | Active clients: {ActiveClients} | Rooms: {RoomTable.Count}");
-					Console.WriteLine("room_id                                | status     | players                      | server url                     | hb");
-					Console.WriteLine(new string('-', 120));
-					foreach (var kv in RoomTable)
+					lock (RenderLock)
 					{
-						var r = kv.Value;
-						Console.WriteLine($"{Trunc(r.RoomId,36),-36} | {Trunc(r.Status,10),-10} | {Trunc(r.Players,28),-28} | {Trunc(r.ServerUrl,28),-28} | {Trunc(r.Heartbeat,6),-6}");
+						table.Rows.Clear();
+						table.Title($"[yellow]🧪 Stress Flow[/] | active={ActiveClients} rooms={RoomTable.Count}");
+						foreach (var kv in RoomTable)
+						{
+							var r = kv.Value;
+							var removed = UpdateRoomStatus(r).GetAwaiter().GetResult();
+							if (removed) { continue; }
+							var (conn, disc) = FetchPlayersFor(r.ServerUrl);
+							table.AddRow(
+								Trunc(r.RoomId, 36),
+								Trunc(r.Status, 10),
+								Trunc(conn, 34),
+								Trunc(disc, 34),
+								Trunc(r.ServerUrl, 28),
+								Trunc(r.Heartbeat, 24)
+							);
+						}
+						ctx.Refresh();
 					}
+					Thread.Sleep(1000);
 				}
-				Thread.Sleep(1000);
-			}
+			});
 		}
+
+		private static (string connected, string disconnected) FetchPlayersFor(string serverUrl)
+		{
+			try
+			{
+				var url = $"{serverUrl}/players";
+				var resp = Http.GetAsync(url).GetAwaiter().GetResult();
+				var raw = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+				var obj = SafeDeserialize<PlayersResp>(raw);
+				if (obj?.Players != null)
+				{
+					var connected = new System.Collections.Generic.List<string>();
+					var disconnected = new System.Collections.Generic.List<string>();
+					foreach (var p in obj.Players)
+					{
+						if (string.Equals(p.State, "connected", StringComparison.OrdinalIgnoreCase)) connected.Add(p.PlayerId ?? "");
+						else disconnected.Add(p.PlayerId ?? "");
+					}
+					return (string.Join("|", connected), string.Join("|", disconnected));
+				}
+			}
+			catch { }
+			return (string.Empty, string.Empty);
+		}
+
+		private class PlayersResp { [JsonPropertyName("players")] public PlayerInfo[]? Players { get; set; } }
+		private class PlayerInfo { [JsonPropertyName("player_id")] public string? PlayerId { get; set; } [JsonPropertyName("state")] public string? State { get; set; } }
 
 		private static string Trunc(string? s, int n) => (s ?? string.Empty).Length <= n ? (s ?? string.Empty) : (s!.Substring(0, n - 3) + "...");
 
@@ -234,6 +326,28 @@ namespace CsClient
 			public string ServerUrl { get; set; } = string.Empty;
 			public string Heartbeat { get; set; } = string.Empty;
 			public void AddPlayer(string p) { Players = string.IsNullOrEmpty(Players) ? p : (Players + "|" + p); }
+		}
+
+		private static async Task<bool> UpdateRoomStatus(RoomRow row)
+		{
+			try
+			{
+				var url = $"{AgentBaseUrl}/rooms/{Uri.EscapeDataString(row.RoomId)}";
+				var resp = await Http.GetAsync(url);
+				var raw = await resp.Content.ReadAsStringAsync();
+				if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+				{
+					RoomTable.TryRemove(row.RoomId, out _);
+					return true;
+				}
+				if (!resp.IsSuccessStatusCode) return false;
+				var room = SafeDeserialize<RoomState>(raw);
+				if (room == null) return false;
+				if (!string.IsNullOrEmpty(room.Status)) row.Status = room.Status!;
+				return false;
+			}
+			catch { }
+			return false;
 		}
 
 		private static T? SafeDeserialize<T>(string raw)

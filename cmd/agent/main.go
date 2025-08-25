@@ -212,6 +212,48 @@ func main() {
 		})
 	})
 
+	// Reconnect lookup: tìm room ACTIVED chứa player_id
+	r.GET("/reconnect/lookup", func(c *gin.Context) {
+		pid := c.Query("player_id")
+		if pid == "" {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{ErrorCode: dto.ErrCodeMissingPlayerID, Error: "player_id required"})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		roomIDs, err := storeMgr.ListRooms(c)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, dto.ToErrorResponse(err))
+			return
+		}
+		found := ""
+		dupCount := 0
+		for _, rid := range roomIDs {
+			st, e := storeMgr.GetRoomState(c, rid)
+			if e != nil || st == nil {
+				continue
+			}
+			if st.Status != "ACTIVED" || len(st.Players) == 0 {
+				continue
+			}
+			for _, p := range st.Players {
+				if p == pid {
+					dupCount++
+					found = st.RoomID
+					break
+				}
+			}
+		}
+		if dupCount > 1 {
+			c.JSON(http.StatusConflict, gin.H{"error": "player_in_multiple_rooms", "player_id": pid})
+			return
+		}
+		if found == "" {
+			c.JSON(http.StatusNotFound, gin.H{"reconnectable": false, "reason": "not_found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"room_id": found, "reconnectable": true})
+	})
+
 	// Shutdown callback từ server → Agent
 	r.POST("/rooms/:room_id/shutdown", func(c *gin.Context) {
 		rid := c.Param("room_id")

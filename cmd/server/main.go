@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -65,6 +64,19 @@ func (ps *playerStore) anyDisconnected(now time.Time, ttl time.Duration) (bool, 
 		}
 	}
 	return false, ""
+}
+
+// countActive returns number of players with heartbeat within TTL
+func (ps *playerStore) countActive(now time.Time, ttl time.Duration) int {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	active := 0
+	for _, ts := range ps.lastSeen {
+		if now.Sub(ts) <= ttl {
+			active++
+		}
+	}
+	return active
 }
 
 func ginLog(format string, args ...interface{}) { fmt.Fprintf(gin.DefaultWriter, format+"\n", args...) }
@@ -143,15 +155,15 @@ func main() {
 	// SDK: build sources and final handler to notify agent and stop server
 	sdk := svrsdk.Init(cfg)
 	sdk.UseSource(&svrsdk.SignalSource{})
+	// Chỉ shutdown khi không còn player nào (size==0) sau grace
 	sdk.UseSource(&svrsdk.HeartbeatSource{
 		InitialGrace: initialGrace,
 		HeartbeatTTL: heartbeatTTL,
 		PollInterval: time.Second,
 		GetStats: func() (int, bool) {
 			now := time.Now()
-			size := players.size()
-			bad, _ := players.anyDisconnected(now, heartbeatTTL)
-			return size, bad
+			active := players.countActive(now, heartbeatTTL)
+			return active, active == 0
 		},
 	})
 
@@ -188,52 +200,52 @@ func main() {
 		}
 	}()
 
-	// Giả lập endgame: khi đã có client, sau 2 phút có 50% khả năng kết thúc game
-	go func() {
-		rand.Seed(time.Now().UnixNano())
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		// chờ có ít nhất 1 client
-		for {
-			if atomic.LoadInt32(&activeShutdown) == 1 {
-				return
-			}
-			if players.size() > 0 {
-				break
-			}
-			<-ticker.C
-		}
-		// đợi 2 phút
-		select {
-		case <-time.After(2 * time.Minute):
-		case <-ticker.C:
-		}
-		if atomic.LoadInt32(&activeShutdown) == 1 {
-			return
-		}
-		// 50% xác suất
-		if rand.Intn(2) == 0 {
-			list := players.snapshot(time.Now(), heartbeatTTL)
-			if len(list) == 0 {
-				return
-			}
-			scores := map[string]int{}
-			winner := ""
-			best := -1
-			for _, p := range list {
-				s := rand.Intn(20)
-				scores[p.PlayerID] = s
-				if s > best {
-					best = s
-					winner = p.PlayerID
-				}
-			}
-			_ = sdk.SendShutdownWithDetails(svrsdk.ReasonGameCycleCompleted, map[string]any{
-				"winner": winner,
-				"scores": scores,
-			})
-		}
-	}()
+	// Giả lập endgame: khi đã có client, sau 5 phút có 50% khả năng kết thúc game
+	// go func() {
+	// 	rand.Seed(time.Now().UnixNano())
+	// 	ticker := time.NewTicker(1 * time.Second)
+	// 	defer ticker.Stop()
+	// 	// chờ có ít nhất 1 client
+	// 	for {
+	// 		if atomic.LoadInt32(&activeShutdown) == 1 {
+	// 			return
+	// 		}
+	// 		if players.size() > 0 {
+	// 			break
+	// 		}
+	// 		<-ticker.C
+	// 	}
+	// 	// đợi 5 phút
+	// 	select {
+	// 	case <-time.After(5 * time.Minute):
+	// 	case <-ticker.C:
+	// 	}
+	// 	if atomic.LoadInt32(&activeShutdown) == 1 {
+	// 		return
+	// 	}
+	// 	// 50% xác suất
+	// 	if rand.Intn(2) == 0 {
+	// 		list := players.snapshot(time.Now(), heartbeatTTL)
+	// 		if len(list) == 0 {
+	// 			return
+	// 		}
+	// 		scores := map[string]int{}
+	// 		winner := ""
+	// 		best := -1
+	// 		for _, p := range list {
+	// 			s := rand.Intn(20)
+	// 			scores[p.PlayerID] = s
+	// 			if s > best {
+	// 				best = s
+	// 				winner = p.PlayerID
+	// 			}
+	// 		}
+	// 		_ = sdk.SendShutdownWithDetails(svrsdk.ReasonGameCycleCompleted, map[string]any{
+	// 			"winner": winner,
+	// 			"scores": scores,
+	// 		})
+	// 	}
+	// }()
 
 	// Chờ sự kiện shutdown từ SDK
 	<-shutdownCh
