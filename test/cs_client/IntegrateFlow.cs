@@ -283,6 +283,22 @@ namespace CsClient
 			}
 		}
 
+		// Gửi 1 heartbeat duy nhất: dùng trong demo reconnect (không tạo loop vô hạn)
+		private static async Task HeartbeatOnce(HttpClient http, string serverBaseUrl, string playerId)
+		{
+			var url = $"{serverBaseUrl}/heartbeat?player_id={Uri.EscapeDataString(playerId)}";
+			try
+			{
+				var resp = await http.GetAsync(url);
+				var raw = await resp.Content.ReadAsStringAsync();
+				Console.WriteLine($"   HB[once] status={(int)resp.StatusCode} body={raw}");
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"   HB[once] error: {ex.Message}");
+			}
+		}
+
 		// JSON models
 		private class SubmitTicketResponse { [JsonPropertyName("ticket_id")] public string? TicketId { get; set; } [JsonPropertyName("status")] public string? Status { get; set; } }
 		private class TicketStatusResponse { [JsonPropertyName("status")] public string? Status { get; set; } [JsonPropertyName("room_id")] public string? RoomId { get; set; } }
