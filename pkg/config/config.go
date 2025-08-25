@@ -99,6 +99,11 @@ type MatchmakingConfig struct {
 	// Type: time.Duration, Format: "60s", "1m"
 	// Range: 10s - 10m (recommended: 60s)
 	TerminalTTL time.Duration `json:"terminal_ttl"`
+
+	// ExecutablePath - Path to the game server executable
+	// Type: string, Format: "/usr/local/bin/boardserver/server.x86_64"
+	// Range: Valid file paths
+	ExecutablePath string `json:"executable_path"`
 }
 
 // CronConfig holds background task configuration
@@ -159,10 +164,11 @@ var defaults = map[string]string{
 	"NOMAD_IP_MAPPINGS": "172.26.15.163:52.221.213.97", // Default IP mapping (fallback)
 
 	// Matchmaking Configuration
-	"TICKET_TTL_SECONDS":            "120", // 2 minutes - ticket validity period
-	"ALLOCATION_TIMEOUT_MINUTES":    "2",   // 2 minutes - max wait for server allocation
-	"ALLOCATION_POLL_DELAY_SECONDS": "2",   // 2 seconds - delay between allocation checks
-	"TERMINAL_TTL_SECONDS":          "60",  // 60 seconds - keep DEAD/FULFILLED rooms
+	"TICKET_TTL_SECONDS":            "120",                                      // 2 minutes - ticket validity period
+	"ALLOCATION_TIMEOUT_MINUTES":    "2",                                        // 2 minutes - max wait for server allocation
+	"ALLOCATION_POLL_DELAY_SECONDS": "2",                                        // 2 seconds - delay between allocation checks
+	"TERMINAL_TTL_SECONDS":          "60",                                       // 60 seconds - keep DEAD/FULFILLED rooms
+	"EXECUTABLE_PATH":               "/usr/local/bin/boardserver/server.x86_64", // Default executable path
 
 	// Cron Configuration
 	"CRON_GRACE_SECONDS":    "60",           // 1 minute - grace period before cleanup
@@ -197,6 +203,7 @@ func Load() *Config {
 			AllocationTimeout:   getDurationEnv("ALLOCATION_TIMEOUT_MINUTES", defaults["ALLOCATION_TIMEOUT_MINUTES"]) * time.Minute,
 			AllocationPollDelay: getDurationEnv("ALLOCATION_POLL_DELAY_SECONDS", defaults["ALLOCATION_POLL_DELAY_SECONDS"]) * time.Second,
 			TerminalTTL:         getDurationEnv("TERMINAL_TTL_SECONDS", defaults["TERMINAL_TTL_SECONDS"]) * time.Second,
+			ExecutablePath:      getEnv("EXECUTABLE_PATH", defaults["EXECUTABLE_PATH"]),
 		},
 		Cron: CronConfig{
 			GraceSeconds: getInt64Env("CRON_GRACE_SECONDS", defaults["CRON_GRACE_SECONDS"]),

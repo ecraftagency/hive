@@ -40,7 +40,11 @@
 ## Nomad
 - SDK: `github.com/hashicorp/nomad/api`
 - Pre-check (Plan) trước khi register job: dùng `Jobs.Plan(job, true, ...)` để xác minh có node phù hợp/tài nguyên đủ. Nếu Plan fail → set room `DEAD` ngay với `fail_reason=insufficient_resources|plan_error` (hoặc `plan_no_response`) và không gọi register. Điều này tránh tình trạng room bị đánh dấu DEAD nhưng Nomad vẫn có thể tạo allocation muộn do backlog trong hàng đợi schedule.
-- Job `game-server-<room_id>`: driver `exec`, command `/usr/local/bin/server`, args: `["${NOMAD_PORT_http}", "<room_id>", "<bearer_token>"]`, dynamic port label `http`
+- Job `game-server-<room_id>`: driver `exec`, command configurable từ `EXECUTABLE_PATH` env hoặc `-executable` flag, args: `["-serverId", "<room_id>", "-token", "<bearer_token>", "-nographics", "-batchmode", "-agentUrl", "<agent_url>", "-serverPort", "${NOMAD_PORT_http}"]`, dynamic port label `http`
+- Executable path: Có thể cấu hình qua:
+  - Environment variable: `EXECUTABLE_PATH=/usr/local/bin/boardserver/server.x86_64`
+  - Command line flag: `./bin/agent -executable=/path/to/game/server`
+  - Default: `/usr/local/bin/boardserver/server.x86_64`
 - Double-check allocate:
   1) Kiểm tra Nomad allocation RUNNING/healthy.
   2) Readiness probe TCP connect đến room service sau `double_check_interval` (2s). Pass 2 lần probe mới set `ACTIVED`.
@@ -53,13 +57,16 @@
 - `insufficient_resources`: Nomad Plan xác định không đủ tài nguyên/không có node phù hợp.
 - `plan_error` | `plan_no_response`: lỗi khi gọi Plan hoặc Nomad không trả về kết quả hợp lệ.
 
+**Lưu ý**: Các room với status `DEAD` được giữ lại trong Redis để inspect và debug. Jobs tương ứng được dừng nhưng không bị purge để có thể xem logs và allocation details sau này.
+
 ## Cron & Consistency
 - **Nguyên tắc tối thượng**: `count(RUNNING game-server jobs) == count(ACTIVED rooms)`
-- **Dừng job terminal**: Room `DEAD`/`FULFILLED` → dừng job tương ứng ngay
+- **Dừng job terminal**: Room `DEAD`/`FULFILLED` → dừng job tương ứng ngay (không purge để inspect)
 - **Crash detection**: `ACTIVED` room không có running job → `DEAD(server_crash)`
-- **Stray job cleanup**: Job chạy không có room `ACTIVED` tương ứng → dừng (chỉ game-server jobs)
-- **Timeout handling**: `OPENED` room timeout → `DEAD(alloc_timeout)`
+- **Stray job cleanup**: Job chạy không có room `ACTIVED` tương ứng → dừng (không purge để inspect)
+- **Timeout handling**: `OPENED` room timeout → `DEAD(alloc_timeout)` (chỉ khi chưa có fail_reason)
 - **FULFILLED**: Chỉ từ `POST /rooms/:id/shutdown` hợp lệ (graceful), không tự động set
+- **Failed allocation rooms**: Được giữ lại với status `DEAD` và `fail_reason` để inspect
 
 ## UI
 - `/ui`: HTML+JS, poll `/rooms` mỗi 3s; hiển thị Waiting (tickets), Matched/Actived (rooms); trạng thái room `OPENED|ACTIVED|DEAD|FULFILLED`

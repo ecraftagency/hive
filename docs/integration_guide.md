@@ -2,6 +2,14 @@
 
 Tài liệu tích hợp cho bên thứ 3 với Hive Agent.
 
+## Cấu hình Executable Path
+
+Agent có thể cấu hình executable path của game server qua:
+
+- **Environment variable**: `EXECUTABLE_PATH=/usr/local/bin/boardserver/server.x86_64`
+- **Command line flag**: `./bin/agent -executable=/path/to/game/server`
+- **Default**: `/usr/local/bin/boardserver/server.x86_64`
+
 ## 1. API Endpoints
 
 ### Base URL
@@ -55,6 +63,14 @@ http://<agent-host>:8080
 Ghi chú:
 - Agent thực hiện pre-check (Nomad Plan) trước khi register job để tránh trường hợp room bị đánh dấu DEAD nhưng Nomad vẫn có thể tạo allocation muộn do backlog.
 - `fail_reason` có thể là: `alloc_timeout`, `server_crash`, `nomad_error`, `insufficient_resources`, `plan_error`, `plan_no_response`.
+
+### **Fail reasons (DEAD)**
+- **`alloc_timeout`**: Hết thời gian chờ allocation/ready
+- **`server_crash`**: Job dừng/xóa khi đang ACTIVED mà không có tín hiệu graceful
+- **`insufficient_resources`**: Nomad Plan xác định không đủ tài nguyên/không có node phù hợp
+- **`plan_error` | `plan_no_response`**: Lỗi khi gọi Plan hoặc Nomad không trả về kết quả hợp lệ
+
+**Lưu ý**: Các room với status `DEAD` được giữ lại trong Redis để inspect và debug. Jobs tương ứng được dừng nhưng không bị purge để có thể xem logs và allocation details sau này.
 
 ## 2. Client Integration Flow
 
@@ -268,3 +284,34 @@ const POLLING_CONFIG = {
 ### Timeout
 - Increase timeout values
 - Check server load
+
+## Game Server Arguments
+
+Khi Agent khởi chạy game server, nó sẽ truyền các tham số sau:
+
+### **Required Arguments:**
+- `-serverPort <port>`: Port cho HTTP heartbeat server (từ ${NOMAD_PORT_http})
+- `-serverId <room_id>`: Room identifier do Agent sinh
+- `-token <bearer_token>`: Token để gọi Agent shutdown API
+- `-agentUrl <agent_url>`: URL của Agent để gửi shutdown callback
+
+### **Optional Arguments:**
+- `-nographics`: Flag cho engine không cần đồ họa
+- `-batchmode`: Flag cho chế độ batch
+
+### **Example:**
+```bash
+# Agent launches game server with these arguments:
+./game_server \
+  -serverPort 30000 \
+  -serverId room_abc123 \
+  -token mysecret123 \
+  -agentUrl http://localhost:8080 \
+  -nographics \
+  -batchmode
+```
+
+### **HTTP Heartbeat Server:**
+- `-serverPort` là bắt buộc: Server sẽ mở HTTP server trên port đó để nhận heartbeat
+- Port này được cung cấp bởi Nomad thông qua biến môi trường `${NOMAD_PORT_http}`
+- Server sử dụng port này để lắng nghe heartbeat requests từ clients

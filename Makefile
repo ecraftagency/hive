@@ -33,6 +33,16 @@ clean:
 run-agent: agent
 	./bin/agent
 
+# Run Agent with custom executable path
+run-agent-custom: agent
+	@echo "Usage: make run-agent-custom EXECUTABLE=/path/to/executable"
+	@if [ -z "$(EXECUTABLE)" ]; then \
+		echo "Error: EXECUTABLE path not specified"; \
+		echo "Example: make run-agent-custom EXECUTABLE=/usr/local/bin/mygame/server"; \
+		exit 1; \
+	fi
+	./bin/agent -executable=$(EXECUTABLE)
+
 # Run Server
 run-server: server
 	./bin/server

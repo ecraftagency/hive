@@ -2,12 +2,20 @@
 
 ## Khởi chạy
 - Nhận tham số dòng lệnh dạng flag:
-  - `-port <port>` (Nomad dynamic host port)
-  - `-serverId <room_id>`
-  - `-token <bearer_token>` (token để gọi Agent shutdown API)
+  - `-serverPort <port>` (Port cho HTTP heartbeat server - required)
+  - `-serverId <room_id>` (Room identifier from Agent - required)
+  - `-token <bearer_token>` (token để gọi Agent shutdown API - required)
+  - `-agentUrl <agent_url>` (URL của Agent để gửi shutdown callback - required)
   - `-nographics` (tùy chọn, dành cho engine không cần đồ họa)
   - `-batchmode` (tùy chọn)
-- Ví dụ: `/usr/local/bin/server -port 31695 -serverId flask -token 1234abcd -nographics -batchmode`
+- Ví dụ: `/usr/local/bin/server -serverPort 8080 -serverId flask -token 1234abcd -agentUrl http://localhost:8080 -nographics -batchmode`
+
+**Lưu ý**: 
+- Executable path có thể được cấu hình qua Agent:
+  - Environment variable: `EXECUTABLE_PATH=/usr/local/bin/boardserver/server.x86_64`
+  - Command line flag: `./bin/agent -executable=/path/to/game/server`
+  - Default: `/usr/local/bin/boardserver/server.x86_64`
+- `-serverPort` là bắt buộc: server sẽ mở HTTP server trên port đó để nhận heartbeat từ clients
 
 ## CORS
 - Bật CORS cho mọi `Origin`, cho phép `GET, POST, OPTIONS` và headers cơ bản; trả `204` cho preflight OPTIONS.

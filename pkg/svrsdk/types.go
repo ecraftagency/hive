@@ -24,6 +24,7 @@ type Config struct {
 	AgentBaseURL string
 	NoGraphics   bool
 	BatchMode    bool
+	ServerPort   string // Port for HTTP heartbeat server (optional)
 }
 
 // ShutdownEvent mô tả sự kiện shutdown có thể kèm payload chi tiết

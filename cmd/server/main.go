@@ -72,25 +72,25 @@ func ginLog(format string, args ...interface{}) { fmt.Fprintf(gin.DefaultWriter,
 func main() {
 	// Parse config via SDK (ENV first, then flags)
 	cfg := svrsdk.FromEnvOrArgs(os.Args)
-	port := cfg.Port
+	serverPort := cfg.ServerPort
 	roomID := cfg.RoomID
 	bearer := cfg.Token
 	agentBase := cfg.AgentBaseURL
 
 	// Validate required arguments
-	if port == "" {
-		ginLog("missing -port argument")
+	if serverPort == "" {
+		ginLog("missing -serverPort argument")
 		os.Exit(1)
 	}
-	if _, err := strconv.Atoi(port); err != nil {
-		ginLog("invalid port: %s", port)
+	if _, err := strconv.Atoi(serverPort); err != nil {
+		ginLog("invalid serverPort: %s", serverPort)
 		os.Exit(1)
 	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	ginLog("startup args: port=%s room=%s bearer=%s agent=%s", port, roomID, bearer, agentBase)
+	ginLog("startup args: serverPort=%s room=%s bearer=%s agent=%s", serverPort, roomID, bearer, agentBase)
 
 	// CORS middleware (simple, no dependency)
 	r.Use(func(c *gin.Context) {
@@ -119,7 +119,7 @@ func main() {
 
 	// Web UI
 	r.GET("/", func(c *gin.Context) {
-		html := fmt.Sprintf(ui.ServerUIHTML, roomID, port)
+		html := fmt.Sprintf(ui.ServerUIHTML, roomID, serverPort)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 	})
 
@@ -155,9 +155,9 @@ func main() {
 		},
 	})
 
-	srv := &http.Server{Addr: ":" + port, Handler: r}
+	srv := &http.Server{Addr: ":" + serverPort, Handler: r}
 	go func() {
-		ginLog("server listening on :%s room=%s", port, roomID)
+		ginLog("server listening on :%s room=%s", serverPort, roomID)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			if atomic.LoadInt32(&activeShutdown) == 1 {
 				ginLog("server closed after active shutdown: %v", err)

@@ -4,13 +4,14 @@ import (
 	"os"
 )
 
-// FromEnvOrArgs ưu tiên ENV rồi fallback flags -port, -serverId, -token, -agentBase
+// FromEnvOrArgs ưu tiên ENV rồi fallback flags -serverPort, -serverId, -token, -agentUrl, -nographics, -batchmode
 func FromEnvOrArgs(args []string) Config {
 	cfg := Config{
 		Port:         os.Getenv("HIVE_PORT"),
 		RoomID:       os.Getenv("HIVE_ROOM_ID"),
 		Token:        os.Getenv("HIVE_TOKEN"),
 		AgentBaseURL: os.Getenv("HIVE_AGENT_BASE_URL"),
+		ServerPort:   os.Getenv("HIVE_SERVER_PORT"),
 	}
 	// Backward-compatible fallback
 	if cfg.AgentBaseURL == "" {
@@ -20,9 +21,9 @@ func FromEnvOrArgs(args []string) Config {
 	// Fallback flags
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "-port":
+		case "-serverPort":
 			if i+1 < len(args) {
-				cfg.Port = args[i+1]
+				cfg.ServerPort = args[i+1]
 				i++
 			}
 		case "-serverId":
@@ -35,7 +36,7 @@ func FromEnvOrArgs(args []string) Config {
 				cfg.Token = args[i+1]
 				i++
 			}
-		case "-agentBase":
+		case "-agentUrl":
 			if i+1 < len(args) {
 				cfg.AgentBaseURL = args[i+1]
 				i++

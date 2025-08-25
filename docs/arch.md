@@ -16,7 +16,7 @@ Hệ thống quản lý dedicated server phục vụ game theo mô hình: Agent 
 ## Thành phần
 - Agent (Go + Gin):
   - Cung cấp API: `POST /tickets`, `GET /tickets/:id`, `POST /tickets/:id/cancel`, `GET /rooms/:room_id`, `GET /admin/overview`. Không còn `create_room`/`join_room` legacy trong flow mới.
-  - Kết nối Nomad qua SDK (`github.com/hashicorp/nomad/api`) để đăng ký job `game-server-<room_id>` (driver exec), cấp port động, truyền `room_id` làm đối số thứ 2 cho server. Trước khi register, thực hiện pre-check bằng `Jobs.Plan(job, true, ...)` để đảm bảo có thể allocate. Nếu Plan thất bại → không register, room chuyển `DEAD` ngay với `fail_reason=insufficient_resources|plan_error|plan_no_response`.
+  - Kết nối Nomad qua SDK (`github.com/hashicorp/nomad/api`) để đăng ký job `game-server-<room_id>` (driver exec), cấp port động, truyền `room_id` làm đối số thứ 2 cho server. Executable path có thể cấu hình qua `EXECUTABLE_PATH` env hoặc `-executable` flag. Trước khi register, thực hiện pre-check bằng `Jobs.Plan(job, true, ...)` để đảm bảo có thể allocate. Nếu Plan thất bại → không register, room chuyển `DEAD` ngay với `fail_reason=insufficient_resources|plan_error|plan_no_response`.
   - Lưu trạng thái phòng vào Redis (`github.com/redis/go-redis/v9`): danh sách người chơi, room_id, allocation_id, server_ip, port, trạng thái `OPENED|ACTIVED|DEAD|FULFILLED`.
   - Chạy cron đồng bộ: đảm bảo `count(RUNNING game-server jobs) == count(ACTIVED rooms)`. Dừng job nếu room `DEAD`/`FULFILLED`. Mark `ACTIVED` room không có job → `DEAD(server_crash)`. Mark `OPENED` timeout → `DEAD(alloc_timeout)`. Terminal rooms có TTL 60s.
   - Web UI `/ui`: bảng Tickets/Opened/Actived/Fulfilled/Dead, auto-refresh 3s.

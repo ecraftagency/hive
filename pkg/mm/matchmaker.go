@@ -2,8 +2,6 @@ package mm
 
 import (
 	"context"
-	"fmt"
-	"net"
 	"time"
 
 	"hive/pkg/store"
@@ -13,14 +11,21 @@ import (
 )
 
 type Manager struct {
-	store        *store.Manager
-	svr          *svrmgr.Manager
-	allocTimeout time.Duration
-	pollInterval time.Duration
+	store          *store.Manager
+	svr            *svrmgr.Manager
+	allocTimeout   time.Duration
+	pollInterval   time.Duration
+	executablePath string
 }
 
-func New(storeMgr *store.Manager, svrMgr *svrmgr.Manager) *Manager {
-	return &Manager{store: storeMgr, svr: svrMgr, allocTimeout: 2 * time.Minute, pollInterval: 2 * time.Second}
+func New(storeMgr *store.Manager, svrMgr *svrmgr.Manager, executablePath string) *Manager {
+	return &Manager{
+		store:          storeMgr,
+		svr:            svrMgr,
+		allocTimeout:   2 * time.Minute,
+		pollInterval:   2 * time.Second,
+		executablePath: executablePath,
+	}
 }
 
 // SubmitJoinTicket: tạo ticket OPENED cho player
@@ -55,8 +60,18 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 	// allocate async
 	go func(rid string, plist []string, created int64) {
 		// allocate job với command mới
-		command := "/usr/local/bin/boardserver/server.x86_64"
-		args := []string{"-port", "${NOMAD_PORT_http}", "-serverId", rid, "-token", "1234abcd", "-nographics", "-batchmode"}
+		command := m.executablePath
+		// command := "/usr/local/bin/tanknarok/TanknarokServer"
+		//args := []string{"-port", "${NOMAD_PORT_http}", "-serverId", rid, "-token", "1234abcd", "-nographics", "-batchmode", "-agentUrl", "https://agent.zensoftstudio.com"}
+		args := []string{
+			"-serverId", rid,
+			"-token", "1234abcd",
+			"-nographics",
+			"-batchmode",
+			"-agentUrl", "https://agent.zensoftstudio.com",
+			"-serverPort", "${NOMAD_PORT_http}",
+		}
+
 		if err := m.svr.RunGameServerV2(rid, 400, 400, command, args); err != nil {
 			// Plan có thể fail ở đây → DEAD ngay với lý do
 			_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: err.Error()})
@@ -80,43 +95,28 @@ func (m *Manager) TryMatch(ctx context.Context) (*store.RoomState, error) {
 					}
 				}
 				if port > 0 {
-					if probeReady(info.HostIP, port) {
-						_ = m.store.SaveRoomState(context.Background(), store.RoomState{
-							RoomID:       rid,
-							AllocationID: info.AllocationID,
-							ServerIP:     info.HostIP,
-							Port:         port,
-							Players:      plist,
-							CreatedAt:    created,
-							Status:       "ACTIVED",
-						})
-						return
-					}
+					// Server is ready when Nomad job is running and we have IP/port
+					// No need for TCP probe - just trust Nomad
+					_ = m.store.SaveRoomState(context.Background(), store.RoomState{
+						RoomID:       rid,
+						AllocationID: info.AllocationID,
+						ServerIP:     info.HostIP,
+						Port:         port,
+						Players:      plist,
+						CreatedAt:    created,
+						Status:       "ACTIVED",
+					})
+					return
 				}
 			}
 			time.Sleep(m.pollInterval)
 		}
-		// timeout → DEAD và deregister job để tránh allocate muộn
+		// timeout → DEAD và dừng job (không purge để có thể inspect sau)
 		_ = m.store.SaveRoomState(context.Background(), store.RoomState{RoomID: rid, Players: plist, CreatedAt: created, Status: "DEAD", FailReason: "alloc_timeout"})
-		_ = m.svr.DeregisterJob(rid, true)
+		_ = m.svr.DeregisterJob(rid, false)
 	}(roomID, players, createdAt)
 
 	return &store.RoomState{RoomID: roomID, Players: players, CreatedAt: createdAt, Status: "OPENED"}, nil
 }
 
-// probeReady: double-check readiness with two fast TCP dials
-func probeReady(host string, port int) bool {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	c1, e1 := net.DialTimeout("tcp", addr, 2*time.Second)
-	if e1 != nil {
-		return false
-	}
-	_ = c1.Close()
-	time.Sleep(500 * time.Millisecond)
-	c2, e2 := net.DialTimeout("tcp", addr, 2*time.Second)
-	if e2 != nil {
-		return false
-	}
-	_ = c2.Close()
-	return true
-}
+// probeReady function removed - we trust Nomad job status instead

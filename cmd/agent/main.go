@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +17,6 @@ import (
 	"hive/pkg/svrmgr"
 	"hive/pkg/ui"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/hashicorp/nomad/api"
 )
@@ -26,12 +26,25 @@ var (
 )
 
 func main() {
+	// Parse command line flags
+	var executablePath string
+	flag.StringVar(&executablePath, "executable", "", "Path to the game server executable")
+	flag.Parse()
+
 	gin.SetMode(gin.DebugMode)
 	fmt.Fprintf(gin.DefaultWriter, "[GIN-debug] Agent version %s\n", Version)
 
 	// Load configuration
 	cfg := config.Load()
-	fmt.Fprintf(gin.DefaultWriter, "[GIN-debug] Config loaded: Redis=%s, Nomad=%s\n", cfg.Redis.URL, cfg.Nomad.Address)
+
+	// Override executable path from command line if provided
+	if executablePath != "" {
+		cfg.Matchmaking.ExecutablePath = executablePath
+		fmt.Fprintf(gin.DefaultWriter, "[GIN-debug] Using executable path from command line: %s\n", executablePath)
+	}
+
+	fmt.Fprintf(gin.DefaultWriter, "[GIN-debug] Config loaded: Redis=%s, Nomad=%s, Executable=%s\n",
+		cfg.Redis.URL, cfg.Nomad.Address, cfg.Matchmaking.ExecutablePath)
 
 	// Init subsystems
 	storeMgr := store.New(cfg.Redis.URL)
@@ -56,7 +69,7 @@ func main() {
 		})
 	}
 	svrmgr.SetIPMappingConfig(&svrmgr.IPMappingConfig{Mappings: ipMappings})
-	mmgr := mm.New(storeMgr, svrMgr)
+	mmgr := mm.New(storeMgr, svrMgr, cfg.Matchmaking.ExecutablePath)
 
 	// Cron runner
 	nc, _ := api.NewClient(&api.Config{Address: cfg.Nomad.Address})
@@ -69,13 +82,25 @@ func main() {
 	r := gin.Default()
 
 	// CORS middleware
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://52.221.213.97:8082"},
-		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization"},
-		AllowCredentials: false,
-		MaxAge:           12 * time.Hour,
-	}))
+	// CORS middleware (simple, no dependency)
+	r.Use(func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+		} else {
+			c.Header("Access-Control-Allow-Origin", "*")
+		}
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Origin, Accept, Authorization")
+		c.Header("Access-Control-Expose-Headers", "Content-Type")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	})
 
 	// UI
 	r.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(ui.AgentUIHTML)) })
@@ -257,8 +282,8 @@ func main() {
 			}
 		}
 		_ = storeMgr.SaveRoomState(c, *st)
-		// best-effort deregister job ngay khi graceful shutdown
-		_ = svrMgr.DeregisterJob(rid, true)
+		// best-effort deregister job ngay khi graceful shutdown (không purge để inspect)
+		_ = svrMgr.DeregisterJob(rid, false)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 

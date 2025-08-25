@@ -39,6 +39,7 @@ make deploy-web
 ## Chạy cục bộ
 ```
 ./bin/agent      # listen :8080
+./bin/agent -executable=/path/to/game/server  # với executable path tùy chỉnh
 ./bin/server 8081 flask   # ví dụ server port 8081 room_id=flask
 ./bin/client     # CLI
 ./bin/web        # Web client listen :8082
